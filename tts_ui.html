@@ -1,0 +1,2662 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>mini·sglang TTS</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;500;600;700;800&family=IBM+Plex+Mono:ital,wght@0,300;0,400;0,500;1,400&family=Instrument+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-deep: #0B090E;
+      --bg-base: #12101A;
+      --bg-surface: #1A1726;
+      --bg-elevated: #231F30;
+      --bg-recessed: #08070C;
+      --accent: #D9A23B;
+      --accent-dim: #A67A2A;
+      --accent-glow: rgba(217, 162, 59, 0.25);
+      --accent-faint: rgba(217, 162, 59, 0.08);
+      --text-primary: #E5E0D8;
+      --text-secondary: #857F8E;
+      --text-muted: #504B5A;
+      --red: #C4454A;
+      --green: #4A9E5A;
+      --border: rgba(255, 255, 255, 0.06);
+      --border-accent: rgba(217, 162, 59, 0.2);
+      --radius: 8px;
+      --radius-lg: 12px;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html { font-size: 16px; }
+
+    body {
+      font-family: 'Instrument Sans', system-ui, sans-serif;
+      background: var(--bg-deep);
+      color: var(--text-primary);
+      min-height: 100vh;
+      overflow-x: hidden;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* Film grain overlay */
+    body::after {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 512 512' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.03'/%3E%3C/svg%3E");
+      pointer-events: none;
+      z-index: 9999;
+      opacity: 0.7;
+    }
+
+    /* Ambient gradient */
+    body::before {
+      content: '';
+      position: fixed;
+      top: -40%; left: -20%;
+      width: 140%; height: 140%;
+      background: radial-gradient(ellipse at 30% 20%, rgba(217, 162, 59, 0.03) 0%, transparent 50%),
+                  radial-gradient(ellipse at 80% 80%, rgba(120, 80, 200, 0.02) 0%, transparent 50%);
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    .container {
+      position: relative;
+      z-index: 1;
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 40px 24px 80px;
+    }
+
+    /* ─── Header ─── */
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 36px;
+    }
+
+    .logo {
+      display: flex;
+      align-items: baseline;
+      gap: 0;
+    }
+
+    .logo-main {
+      font-family: 'Syne', sans-serif;
+      font-weight: 800;
+      font-size: 1.5rem;
+      letter-spacing: -0.03em;
+      color: var(--text-primary);
+    }
+
+    .logo-dot {
+      color: var(--accent);
+      margin: 0 1px;
+    }
+
+    .logo-sub {
+      font-family: 'IBM Plex Mono', monospace;
+      font-weight: 400;
+      font-size: 0.7rem;
+      color: var(--text-muted);
+      margin-left: 10px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .endpoint-cfg {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .endpoint-input {
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 0.7rem;
+      background: var(--bg-recessed);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text-secondary);
+      padding: 6px 10px;
+      width: 200px;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+
+    .endpoint-input:focus {
+      border-color: var(--border-accent);
+      color: var(--text-primary);
+    }
+
+    /* ─── Waveform Display ─── */
+    .waveform-wrap {
+      position: relative;
+      background: var(--bg-recessed);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      overflow: hidden;
+      margin-bottom: 2px;
+    }
+
+    .waveform-inner {
+      position: relative;
+      height: 180px;
+      cursor: crosshair;
+    }
+
+    #waveform {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+
+    .waveform-status {
+      position: absolute;
+      top: 12px;
+      left: 14px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 0.6rem;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      pointer-events: none;
+    }
+
+    .status-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--text-muted);
+      transition: background 0.3s;
+    }
+
+    .status-dot.streaming {
+      background: var(--accent);
+      box-shadow: 0 0 8px var(--accent-glow);
+      animation: pulse-dot 1.2s ease-in-out infinite;
+    }
+
+    .status-dot.ready {
+      background: var(--green);
+    }
+
+    @keyframes pulse-dot {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+
+    .waveform-time {
+      position: absolute;
+      bottom: 10px;
+      right: 14px;
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 0.65rem;
+      color: var(--text-muted);
+      pointer-events: none;
+      letter-spacing: 0.04em;
+    }
+
+    /* ─── Transport Controls ─── */
+    .transport {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 14px 4px;
+      margin-bottom: 24px;
+    }
+
+    .transport-btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 36px;
+      height: 36px;
+      border: none;
+      border-radius: var(--radius);
+      background: var(--bg-surface);
+      color: var(--text-secondary);
+      cursor: pointer;
+      transition: all 0.15s;
+      flex-shrink: 0;
+    }
+
+    .transport-btn:hover:not(:disabled) {
+      background: var(--bg-elevated);
+      color: var(--text-primary);
+    }
+
+    .transport-btn:disabled {
+      opacity: 0.3;
+      cursor: default;
+    }
+
+    .transport-btn.play-btn {
+      width: 42px;
+      height: 42px;
+      background: var(--accent);
+      color: var(--bg-deep);
+      border-radius: 50%;
+    }
+
+    .transport-btn.play-btn:hover:not(:disabled) {
+      background: #E5B04A;
+      color: var(--bg-deep);
+    }
+
+    .transport-btn.play-btn:disabled {
+      background: var(--bg-elevated);
+      color: var(--text-muted);
+    }
+
+    .transport-btn svg {
+      width: 16px;
+      height: 16px;
+      fill: currentColor;
+    }
+
+    .transport-btn.play-btn svg {
+      width: 18px;
+      height: 18px;
+    }
+
+    .transport-spacer { flex: 1; }
+
+    .volume-control {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .volume-icon {
+      color: var(--text-muted);
+      display: flex;
+      align-items: center;
+    }
+
+    .volume-icon svg {
+      width: 14px;
+      height: 14px;
+      fill: currentColor;
+    }
+
+    input[type="range"] {
+      -webkit-appearance: none;
+      appearance: none;
+      height: 3px;
+      border-radius: 2px;
+      background: var(--bg-elevated);
+      outline: none;
+      cursor: pointer;
+    }
+
+    input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      background: var(--accent);
+      border: none;
+      cursor: pointer;
+      transition: transform 0.1s;
+    }
+
+    input[type="range"]::-webkit-slider-thumb:hover {
+      transform: scale(1.3);
+    }
+
+    input[type="range"]::-moz-range-thumb {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      background: var(--accent);
+      border: none;
+      cursor: pointer;
+    }
+
+    .volume-slider { width: 80px; }
+
+    .download-btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 32px;
+      height: 32px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: transparent;
+      color: var(--text-muted);
+      cursor: pointer;
+      transition: all 0.15s;
+      margin-left: 4px;
+    }
+
+    .download-btn:hover:not(:disabled) {
+      border-color: var(--border-accent);
+      color: var(--accent);
+    }
+
+    .download-btn:disabled {
+      opacity: 0.3;
+      cursor: default;
+    }
+
+    .download-btn svg {
+      width: 14px;
+      height: 14px;
+      fill: currentColor;
+    }
+
+    /* ─── Text Input ─── */
+    .input-section {
+      margin-bottom: 16px;
+    }
+
+    .text-input {
+      width: 100%;
+      min-height: 110px;
+      max-height: 300px;
+      padding: 16px 18px;
+      font-family: 'Instrument Sans', sans-serif;
+      font-size: 0.95rem;
+      line-height: 1.6;
+      color: var(--text-primary);
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      resize: vertical;
+      outline: none;
+      transition: border-color 0.2s, box-shadow 0.2s;
+    }
+
+    .text-input::placeholder {
+      color: var(--text-muted);
+      font-style: italic;
+    }
+
+    .text-input:focus {
+      border-color: var(--border-accent);
+      box-shadow: 0 0 0 3px var(--accent-faint);
+    }
+
+    .input-meta {
+      display: flex;
+      justify-content: flex-end;
+      padding-top: 8px;
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 0.62rem;
+      color: var(--text-muted);
+      letter-spacing: 0.04em;
+    }
+
+    .input-meta.is-limit {
+      color: var(--accent);
+    }
+
+    /* ─── Generate Button ─── */
+    .generate-btn {
+      width: 100%;
+      padding: 15px 24px;
+      font-family: 'Syne', sans-serif;
+      font-weight: 700;
+      font-size: 0.85rem;
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+      color: var(--bg-deep);
+      background: var(--accent);
+      border: none;
+      border-radius: var(--radius);
+      cursor: pointer;
+      position: relative;
+      overflow: hidden;
+      transition: all 0.2s;
+      margin-bottom: 28px;
+    }
+
+    .generate-btn:hover:not(:disabled):not(.generating) {
+      background: #E5B04A;
+      box-shadow: 0 4px 20px var(--accent-glow);
+    }
+
+    .generate-btn:active:not(:disabled) {
+      transform: scale(0.99);
+    }
+
+    .generate-btn:disabled {
+      opacity: 0.4;
+      cursor: default;
+    }
+
+    .generate-btn.generating {
+      background: var(--bg-elevated);
+      color: var(--accent);
+      cursor: pointer;
+    }
+
+    .generate-btn.generating::before {
+      content: '';
+      position: absolute;
+      top: 0; left: -100%;
+      width: 200%;
+      height: 100%;
+      background: repeating-linear-gradient(
+        90deg,
+        transparent 0,
+        transparent 40px,
+        rgba(217, 162, 59, 0.06) 40px,
+        rgba(217, 162, 59, 0.06) 80px
+      );
+      animation: shimmer 1.5s linear infinite;
+    }
+
+    @keyframes shimmer {
+      to { transform: translateX(80px); }
+    }
+
+    /* ─── Parameters Panel ─── */
+    .params-toggle {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      background: none;
+      border: none;
+      color: var(--text-secondary);
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 0.72rem;
+      letter-spacing: 0.06em;
+      cursor: pointer;
+      padding: 0 0 12px;
+      transition: color 0.15s;
+    }
+
+    .params-toggle:hover {
+      color: var(--text-primary);
+    }
+
+    .params-toggle .chevron {
+      display: inline-block;
+      transition: transform 0.25s;
+      font-size: 0.6rem;
+    }
+
+    .params-toggle.open .chevron {
+      transform: rotate(90deg);
+    }
+
+    .params-panel {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 18px 28px;
+      padding: 20px;
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      max-height: 0;
+      overflow: hidden;
+      opacity: 0;
+      transition: max-height 0.35s ease, opacity 0.25s ease, padding 0.35s ease, margin 0.35s ease;
+      padding-top: 0;
+      padding-bottom: 0;
+      margin-bottom: 0;
+    }
+
+    .params-panel.open {
+      max-height: 2200px;
+      opacity: 1;
+      padding-top: 20px;
+      padding-bottom: 20px;
+      margin-bottom: 8px;
+    }
+
+    .param-group {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .param-group-wide {
+      grid-column: 1 / -1;
+    }
+
+    .param-label {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 0.65rem;
+      letter-spacing: 0.05em;
+      color: var(--text-muted);
+      text-transform: uppercase;
+    }
+
+    .param-value {
+      color: var(--text-secondary);
+      font-weight: 500;
+    }
+
+    .param-slider {
+      width: 100%;
+    }
+
+    .param-input {
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 0.75rem;
+      background: var(--bg-recessed);
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      color: var(--text-secondary);
+      padding: 6px 8px;
+      width: 100%;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+
+    .param-input:focus {
+      border-color: var(--border-accent);
+      color: var(--text-primary);
+    }
+
+    .param-input[type="file"] {
+      padding: 8px;
+      cursor: pointer;
+    }
+
+    .param-select {
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 0.75rem;
+      background: var(--bg-recessed);
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      color: var(--text-secondary);
+      padding: 6px 8px;
+      width: 100%;
+      outline: none;
+      cursor: pointer;
+      transition: border-color 0.15s;
+    }
+
+    .param-select:focus {
+      border-color: var(--border-accent);
+    }
+
+    .param-check {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-height: 34px;
+      padding: 8px 10px;
+      background: var(--bg-recessed);
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 0.72rem;
+      color: var(--text-secondary);
+      cursor: pointer;
+    }
+
+    .param-check input {
+      accent-color: var(--accent);
+      cursor: pointer;
+    }
+
+    .param-check.is-disabled {
+      opacity: 0.5;
+      cursor: default;
+    }
+
+    .param-hint {
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 0.62rem;
+      color: var(--text-muted);
+      line-height: 1.4;
+      letter-spacing: 0.02em;
+    }
+
+    .quality-feature-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .quality-feature-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(120px, 180px);
+      gap: 8px;
+      align-items: center;
+    }
+
+    .quality-feature-label {
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 0.68rem;
+      color: var(--text-secondary);
+      overflow-wrap: anywhere;
+    }
+
+    .speaker-stack {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .speaker-import-row,
+    .speaker-blend-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+
+    .speaker-import-card,
+    .speaker-slot-card,
+    .speaker-blend-card,
+    .speaker-toggle-card,
+    .speaker-library-item,
+    .speaker-library-empty {
+      background: var(--bg-recessed);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 12px;
+    }
+
+    .speaker-slot-card {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .speaker-slot-actions,
+    .speaker-item-actions,
+    .speaker-meta-row,
+    .speaker-badges {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .speaker-action-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 32px;
+      padding: 0 10px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: transparent;
+      color: var(--text-secondary);
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 0.65rem;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+
+    .speaker-action-btn:hover:not(:disabled) {
+      border-color: var(--border-accent);
+      color: var(--accent);
+    }
+
+    .speaker-action-btn.active {
+      background: var(--accent-faint);
+      border-color: var(--border-accent);
+      color: var(--accent);
+    }
+
+    .speaker-action-btn:disabled {
+      opacity: 0.35;
+      cursor: default;
+    }
+
+    .speaker-blend-card,
+    .speaker-toggle-card {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .speaker-toggle-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+
+    .speaker-blend-caption,
+    .speaker-library-status {
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 0.62rem;
+      line-height: 1.4;
+      letter-spacing: 0.02em;
+    }
+
+    .speaker-library-status {
+      min-height: 18px;
+      color: var(--text-muted);
+    }
+
+    .speaker-library-status.busy {
+      color: var(--accent);
+    }
+
+    .speaker-library-status.success {
+      color: var(--green);
+    }
+
+    .speaker-library-status.error {
+      color: var(--red);
+    }
+
+    .speaker-library {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      max-height: 280px;
+      overflow-y: auto;
+    }
+
+    .speaker-library-empty {
+      color: var(--text-muted);
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 0.65rem;
+      line-height: 1.5;
+    }
+
+    .speaker-library-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .speaker-library-info {
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .speaker-title {
+      font-size: 0.86rem;
+      color: var(--text-primary);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .speaker-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 3px 7px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.04);
+      color: var(--text-secondary);
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 0.58rem;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    .speaker-chip.active {
+      background: var(--accent-faint);
+      color: var(--accent);
+    }
+
+    /* ─── Metrics bar ─── */
+    .metrics {
+      display: flex;
+      gap: 20px;
+      padding: 10px 0 0;
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 0.6rem;
+      color: var(--text-muted);
+      letter-spacing: 0.04em;
+      min-height: 22px;
+    }
+
+    .metric-item span {
+      color: var(--text-secondary);
+    }
+
+    /* ─── Responsive ─── */
+    @media (max-width: 600px) {
+      .container { padding: 24px 16px 60px; }
+      .logo-main { font-size: 1.25rem; }
+      .endpoint-cfg { display: none; }
+      .params-panel { grid-template-columns: 1fr; }
+      .waveform-inner { height: 140px; }
+      .speaker-import-row,
+      .speaker-blend-grid {
+        grid-template-columns: 1fr;
+      }
+      .speaker-library-item {
+        flex-direction: column;
+        align-items: flex-start;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <!-- Header -->
+    <header>
+      <div class="logo">
+        <span class="logo-main">mini<span class="logo-dot">·</span>sglang</span>
+        <span class="logo-sub">TTS</span>
+      </div>
+      <div class="endpoint-cfg">
+        <input type="text" class="endpoint-input" id="endpoint" spellcheck="false">
+      </div>
+    </header>
+
+    <!-- Waveform -->
+    <div class="waveform-wrap">
+      <div class="waveform-inner" id="waveformWrap">
+        <canvas id="waveform"></canvas>
+        <div class="waveform-status">
+          <div class="status-dot" id="statusDot"></div>
+          <span id="statusText">IDLE</span>
+        </div>
+        <div class="waveform-time" id="timeDisplay">0:00 / 0:00</div>
+      </div>
+    </div>
+
+    <!-- Transport Controls -->
+    <div class="transport">
+      <button class="transport-btn" id="btnRewind" disabled title="Rewind">
+        <svg viewBox="0 0 24 24"><path d="M11 18V6l-8.5 6 8.5 6zm.5-6l8.5 6V6l-8.5 6z"/></svg>
+      </button>
+      <button class="transport-btn play-btn" id="btnPlay" disabled title="Play">
+        <svg viewBox="0 0 24 24" id="playIcon"><path d="M8 5v14l11-7z"/></svg>
+      </button>
+      <button class="transport-btn" id="btnStop" disabled title="Stop">
+        <svg viewBox="0 0 24 24"><path d="M6 6h12v12H6z"/></svg>
+      </button>
+      <div class="transport-spacer"></div>
+      <div class="volume-control">
+        <div class="volume-icon">
+          <svg viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02z"/></svg>
+        </div>
+        <input type="range" class="volume-slider" id="volumeSlider" min="0" max="1" step="0.05" value="0.8">
+      </div>
+      <button class="download-btn" id="btnDownload" disabled title="Download WAV">
+        <svg viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
+      </button>
+    </div>
+
+    <!-- Text Input -->
+    <div class="input-section">
+      <textarea class="text-input" id="textInput" placeholder="Enter text to synthesize..." spellcheck="true" maxlength="500"></textarea>
+      <div class="input-meta" id="textCount">0 / 500</div>
+    </div>
+
+    <!-- Generate Button -->
+    <button class="generate-btn" id="btnGenerate">GENERATE</button>
+
+    <!-- Parameters -->
+    <button class="params-toggle" id="paramsToggle">
+      <span class="chevron">&#9654;</span> Parameters
+    </button>
+    <div class="params-panel" id="paramsPanel">
+      <div class="param-group">
+        <label class="param-label">Temperature <span class="param-value" id="tempVal">1.15</span></label>
+        <input type="range" class="param-slider" id="temperature" min="0.05" max="2.0" step="0.05" value="1.15">
+      </div>
+      <div class="param-group">
+        <label class="param-label">Top-K <span class="param-value" id="topkVal">106</span></label>
+        <input type="range" class="param-slider" id="topk" min="1" max="200" step="1" value="106">
+      </div>
+      <div class="param-group">
+        <label class="param-label">Top-P <span class="param-value" id="toppVal">0.00</span></label>
+        <input type="range" class="param-slider" id="topp" min="0" max="1" step="0.01" value="0">
+      </div>
+      <div class="param-group">
+        <label class="param-label">Min-P <span class="param-value" id="minpVal">0.18</span></label>
+        <input type="range" class="param-slider" id="minp" min="0" max="1" step="0.01" value="0.18">
+      </div>
+      <div class="param-group">
+        <label class="param-label">Max Tokens <span class="param-value" id="maxtVal">4096</span></label>
+        <input type="range" class="param-slider" id="maxtokens" min="64" max="4096" step="64" value="4096">
+      </div>
+      <div class="param-group">
+        <label class="param-label">Text Limit <span class="param-value" id="textLimitVal">500</span></label>
+        <input type="range" class="param-slider" id="textlimit" min="100" max="5000" step="50" value="500">
+      </div>
+      <div class="param-group">
+        <label class="param-label">End Fade <span class="param-value" id="fadeVal">20 ms</span></label>
+        <input type="range" class="param-slider" id="fadeout" min="0" max="500" step="5" value="20">
+        <div class="param-hint">Cosine fade-out applied to the audio tail. 0 disables it.</div>
+      </div>
+      <div class="param-group">
+        <label class="param-label">Seed</label>
+        <input type="text" class="param-input" id="seed" placeholder="random" inputmode="numeric">
+      </div>
+      <div class="param-group">
+        <label class="param-label">Text Norm <span class="param-value" id="textNormVal">English (US)</span></label>
+        <select class="param-select" id="textNormLanguage">
+          <option value="en_us">English (US)</option>
+        </select>
+        <div class="param-hint" id="textNormHint">Verbalizes numbers, dates and currency before synthesis.</div>
+      </div>
+      <div class="param-group">
+        <label class="param-label">Speaking Rate Bin <span class="param-value" id="speakingRateBucketVal">Off</span></label>
+        <label class="param-check" id="speakingRateEnabledWrap">
+          <input type="checkbox" id="speakingRateEnabled">
+          <span>Use model rate bin</span>
+        </label>
+        <select class="param-select" id="speakingRateBucket" disabled>
+          <option value="0">Bin 0</option>
+        </select>
+        <div class="param-hint" id="speakingRateHint">Speaking-rate conditioning is disabled.</div>
+      </div>
+      <div class="param-group">
+        <label class="param-label">Quality Bins <span class="param-value" id="qualityBucketVal">Off</span></label>
+        <label class="param-check" id="qualityEnabledWrap">
+          <input type="checkbox" id="qualityEnabled">
+          <span>Use model quality features</span>
+        </label>
+        <div class="quality-feature-list" id="qualityFeatureList"></div>
+        <div class="param-hint" id="qualityHint">Quality conditioning is disabled.</div>
+      </div>
+      <div class="param-group">
+        <label class="param-label">Repetition Window <span class="param-value" id="repWindowVal">50</span></label>
+        <input type="range" class="param-slider" id="repwindow" min="0" max="512" step="1" value="50">
+      </div>
+      <div class="param-group">
+        <label class="param-label">Repetition Penalty <span class="param-value" id="repPenaltyVal">1.20</span></label>
+        <input type="range" class="param-slider" id="reppenalty" min="1" max="3" step="0.05" value="1.2">
+      </div>
+      <div class="param-group">
+        <label class="param-label">Repetition Codebooks <span class="param-value" id="repCodebooksVal">8</span></label>
+        <input type="range" class="param-slider" id="repcodebooks" min="0" max="9" step="1" value="8">
+      </div>
+      <div class="param-group param-group-wide">
+        <label class="param-label">Speaker Blend</label>
+        <div class="speaker-stack">
+          <div class="speaker-import-row">
+            <div class="speaker-import-card">
+              <div class="param-hint">Add speaker audio</div>
+              <input type="file" class="param-input" id="speakerAudioUpload" multiple>
+            </div>
+            <div class="speaker-import-card">
+              <div class="param-hint">Import embedding file</div>
+              <input type="file" class="param-input" id="speakerEmbeddingUpload" accept=".npy,.npz" multiple>
+            </div>
+          </div>
+          <div class="speaker-blend-grid">
+            <div class="speaker-slot-card">
+              <div class="param-hint">Speaker A</div>
+              <select class="param-select" id="speakerASelect">
+                <option value="">None</option>
+              </select>
+              <div class="speaker-slot-actions">
+                <button type="button" class="speaker-action-btn" id="speakerAPlay" disabled>Preview</button>
+              </div>
+            </div>
+            <div class="speaker-slot-card">
+              <div class="param-hint">Speaker B</div>
+              <select class="param-select" id="speakerBSelect">
+                <option value="">None</option>
+              </select>
+              <div class="speaker-slot-actions">
+                <button type="button" class="speaker-action-btn" id="speakerBPlay" disabled>Preview</button>
+              </div>
+            </div>
+          </div>
+          <div class="speaker-blend-card">
+            <label class="param-label">Blend <span class="param-value" id="speakerBlendVal">0.50</span></label>
+            <input type="range" class="param-slider" id="speakerBlend" min="0" max="1" step="0.01" value="0.5" disabled>
+            <div class="speaker-blend-caption" id="speakerBlendCaption">Pick two cached speakers to SLERP between them.</div>
+          </div>
+          <div class="speaker-toggle-row">
+            <div class="speaker-toggle-card" id="cleanBackgroundCard">
+              <label class="param-label">Clean Embedding Background <span class="param-value" id="cleanBackgroundVal">Unavailable</span></label>
+              <label class="param-check" id="cleanBackgroundWrap">
+                <input type="checkbox" id="cleanBackground">
+                <span>Reference voice has a clean background</span>
+              </label>
+              <div class="param-hint" id="cleanBackgroundHint">Current model does not expose the background marker.</div>
+            </div>
+            <div class="speaker-toggle-card" id="accurateModeCard">
+              <label class="param-label">Voice Mode <span class="param-value" id="accurateModeVal">Unavailable</span></label>
+              <label class="param-check" id="accurateModeWrap">
+                <input type="checkbox" id="accurateMode" checked>
+                <span id="accurateModeLabel">Accurate mode</span>
+              </label>
+              <div class="param-hint" id="accurateModeHint">Current model does not expose the accurate-mode marker.</div>
+            </div>
+          </div>
+          <div class="param-hint" id="speakerHint">Optional. Upload speaker audio to extract and cache embeddings for this session, or import saved .npy/.npz embeddings.</div>
+          <div class="speaker-library-status" id="speakerLibraryStatus"></div>
+          <div class="speaker-library" id="speakerLibrary">
+            <div class="speaker-library-empty">No cached speaker embeddings yet.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Metrics -->
+    <div class="metrics" id="metrics"></div>
+  </div>
+
+  <script>
+    // ─── State ───
+    const state = {
+      isGenerating: false,
+      isPlaying: false,
+      audioCtx: null,
+      currentSource: null,
+      audioBuffer: null,
+      allSamples: null,
+      gainNode: null,
+      playbackStartTime: 0,
+      playbackOffset: 0,
+      abortController: null,
+      animFrameId: null,
+      genStartTime: 0,
+      ttfb: 0,
+      // Streaming playback
+      streamingSources: [],
+      streamingStartTime: 0,
+      streamingNextTime: 0,
+      streamingPlaying: false,
+      speakerSessionId: null,
+      speakingRateInitialized: false,
+      qualityInitialized: false,
+      speakerCapabilities: {
+        speaker_enabled: true,
+        speaker_embedding_dim: null,
+        n_codebooks: 9,
+        max_tokens: 4096,
+        speaking_rate_num_buckets: 0,
+        speaking_rate_buckets: [],
+        quality_num_buckets: 0,
+        quality_features: [],
+        quality_buckets: {},
+        quality_dropout_by_feature: {},
+        speaker_background_token_enabled: false,
+        accurate_mode_token_enabled: false,
+        text_normalization_enabled: true,
+        text_norm_languages: [],
+      },
+      speakerLibrary: [],
+      speakerPreviewUrls: new Map(),
+      previewAudio: null,
+      previewSpeakerId: null,
+      speakerInitialSelectionApplied: false,
+      speakerSelectionTouched: false,
+    };
+
+    // ─── Default endpoint to current origin ───
+    document.getElementById('endpoint').value = window.location.origin;
+
+    // ─── DOM ───
+    const $ = id => document.getElementById(id);
+    const canvas = $('waveform');
+    const ctx = canvas.getContext('2d');
+    const textInput = $('textInput');
+    const textCount = $('textCount');
+    const textLimitSlider = $('textlimit');
+    const textLimitVal = $('textLimitVal');
+    const speakingRateEnabled = $('speakingRateEnabled');
+    const speakingRateEnabledWrap = $('speakingRateEnabledWrap');
+    const speakingRateBucket = $('speakingRateBucket');
+    const speakingRateBucketVal = $('speakingRateBucketVal');
+    const speakingRateHint = $('speakingRateHint');
+    const textNormLanguage = $('textNormLanguage');
+    const textNormVal = $('textNormVal');
+    const textNormHint = $('textNormHint');
+    const qualityEnabled = $('qualityEnabled');
+    const qualityEnabledWrap = $('qualityEnabledWrap');
+    const qualityFeatureList = $('qualityFeatureList');
+    const qualityBucketVal = $('qualityBucketVal');
+    const qualityHint = $('qualityHint');
+    const cleanBackground = $('cleanBackground');
+    const cleanBackgroundWrap = $('cleanBackgroundWrap');
+    const cleanBackgroundVal = $('cleanBackgroundVal');
+    const cleanBackgroundHint = $('cleanBackgroundHint');
+    const accurateMode = $('accurateMode');
+    const accurateModeWrap = $('accurateModeWrap');
+    const accurateModeVal = $('accurateModeVal');
+    const accurateModeLabel = $('accurateModeLabel');
+    const accurateModeHint = $('accurateModeHint');
+    const maxTokensSlider = $('maxtokens');
+    const maxTokensVal = $('maxtVal');
+    const repCodebooks = $('repcodebooks');
+    const repCodebooksVal = $('repCodebooksVal');
+    const btnGenerate = $('btnGenerate');
+    const btnPlay = $('btnPlay');
+    const btnStop = $('btnStop');
+    const btnRewind = $('btnRewind');
+    const btnDownload = $('btnDownload');
+    const statusDot = $('statusDot');
+    const statusText = $('statusText');
+    const timeDisplay = $('timeDisplay');
+    const volumeSlider = $('volumeSlider');
+    const metricsEl = $('metrics');
+    const paramsToggle = $('paramsToggle');
+    const paramsPanel = $('paramsPanel');
+    const speakerAudioUpload = $('speakerAudioUpload');
+    const speakerEmbeddingUpload = $('speakerEmbeddingUpload');
+    const speakerASelect = $('speakerASelect');
+    const speakerBSelect = $('speakerBSelect');
+    const speakerAPlay = $('speakerAPlay');
+    const speakerBPlay = $('speakerBPlay');
+
+    function hasSynthInput() {
+      return textInput.value.length > 0;
+    }
+
+    function updateGenerateButton() {
+      btnGenerate.disabled = !hasSynthInput() && !state.isGenerating;
+    }
+
+    function updateTextLimitUI() {
+      const limit = Math.max(1, parseInt(textLimitSlider.value) || 500);
+      textInput.maxLength = limit;
+      if (textInput.value.length > limit) {
+        textInput.value = textInput.value.slice(0, limit);
+      }
+      textLimitVal.textContent = `${limit}`;
+      textCount.textContent = `${textInput.value.length} / ${limit}`;
+      textCount.classList.toggle('is-limit', textInput.value.length >= limit);
+      updateGenerateButton();
+    }
+
+    function updateRepetitionCodebooksUI() {
+      const nCodebooks = Math.max(1, parseInt(state.speakerCapabilities.n_codebooks || 9));
+      repCodebooks.max = `${nCodebooks}`;
+      if (parseInt(repCodebooks.value) > nCodebooks) {
+        repCodebooks.value = `${nCodebooks}`;
+      }
+      repCodebooksVal.textContent = repCodebooks.value;
+    }
+
+    function updateMaxTokensUI() {
+      const modelMax = Math.max(1, parseInt(state.speakerCapabilities.max_tokens || 4096));
+      maxTokensSlider.max = `${modelMax}`;
+      maxTokensSlider.min = `${Math.min(64, modelMax)}`;
+      maxTokensSlider.value = `${modelMax}`;
+      maxTokensVal.textContent = maxTokensSlider.value;
+    }
+
+    function speakingRateBucketLabels() {
+      const labels = state.speakerCapabilities.speaking_rate_buckets;
+      return Array.isArray(labels) ? labels.map(label => String(label)) : [];
+    }
+
+    function renderSpeakingRateBuckets() {
+      const numBuckets = Math.max(0, parseInt(state.speakerCapabilities.speaking_rate_num_buckets || 0));
+      const labels = speakingRateBucketLabels();
+      const previousValue = parseInt(speakingRateBucket.value);
+
+      speakingRateBucket.innerHTML = '';
+      for (let i = 0; i < numBuckets; i++) {
+        const option = document.createElement('option');
+        option.value = `${i}`;
+        option.textContent = labels[i] ? `Bin ${i} (${labels[i]})` : `Bin ${i}`;
+        speakingRateBucket.appendChild(option);
+      }
+
+      if (numBuckets > 0) {
+        const fallback = Math.floor(numBuckets / 2);
+        const bucket = Number.isFinite(previousValue)
+          ? Math.min(Math.max(previousValue, 0), numBuckets - 1)
+          : fallback;
+        speakingRateBucket.value = `${bucket}`;
+        if (!state.speakingRateInitialized) {
+          speakingRateEnabled.checked = false;
+          state.speakingRateInitialized = true;
+        }
+      } else {
+        state.speakingRateInitialized = false;
+      }
+      updateSpeakingRateUI();
+    }
+
+    function updateSpeakingRateUI() {
+      const numBuckets = Math.max(0, parseInt(state.speakerCapabilities.speaking_rate_num_buckets || 0));
+      const labels = speakingRateBucketLabels();
+      const supported = numBuckets > 0;
+      if (!supported) {
+        speakingRateEnabled.checked = false;
+      }
+
+      speakingRateEnabled.disabled = !supported;
+      speakingRateEnabledWrap.classList.toggle('is-disabled', !supported);
+      speakingRateBucket.disabled = !supported || !speakingRateEnabled.checked;
+
+      if (!supported) {
+        speakingRateBucketVal.textContent = 'Off';
+        speakingRateHint.textContent = 'Current model does not expose speaking-rate bins.';
+        return;
+      }
+
+      if (!speakingRateEnabled.checked) {
+        speakingRateBucketVal.textContent = 'Off';
+        speakingRateHint.textContent = `${numBuckets} model ${numBuckets === 1 ? 'bin is' : 'bins are'} available. Enable this to prepend a rate token.`;
+        return;
+      }
+
+      const bucket = Math.min(Math.max(parseInt(speakingRateBucket.value) || 0, 0), numBuckets - 1);
+      speakingRateBucket.value = `${bucket}`;
+      speakingRateBucketVal.textContent = `Bin ${bucket}`;
+      speakingRateHint.textContent = labels[bucket]
+        ? `Using bucket ${bucket}: ${labels[bucket]}.`
+        : `Using bucket ${bucket}.`;
+    }
+
+    // ─── Text normalization ───
+    const TEXT_NORM_LABELS = {
+      en_us: 'English (US)',
+      en_gb: 'English (UK)',
+      fr_fr: 'French',
+      de: 'German',
+      es: 'Spanish',
+      it: 'Italian',
+      pt_br: 'Portuguese (BR)',
+      ja: 'Japanese',
+      cmn: 'Mandarin',
+      ko: 'Korean',
+    };
+    const DEFAULT_TEXT_NORM_LANGUAGES = Object.keys(TEXT_NORM_LABELS);
+
+    function renderTextNormLanguages() {
+      const supported = state.speakerCapabilities.text_normalization_enabled !== false;
+      const languages = (state.speakerCapabilities.text_norm_languages || []).length
+        ? state.speakerCapabilities.text_norm_languages
+        : DEFAULT_TEXT_NORM_LANGUAGES;
+      const previous = textNormLanguage.value;
+
+      textNormLanguage.innerHTML = '';
+      const offOption = document.createElement('option');
+      offOption.value = '';
+      offOption.textContent = 'Off (raw text)';
+      textNormLanguage.appendChild(offOption);
+      for (const code of languages) {
+        const option = document.createElement('option');
+        option.value = code;
+        option.textContent = TEXT_NORM_LABELS[code] || code;
+        textNormLanguage.appendChild(option);
+      }
+
+      if (previous && [...textNormLanguage.options].some(o => o.value === previous)) {
+        textNormLanguage.value = previous;
+      } else {
+        textNormLanguage.value = languages.includes('en_us') ? 'en_us' : '';
+      }
+      textNormLanguage.disabled = !supported;
+      if (!supported) {
+        textNormLanguage.value = '';
+      }
+      updateTextNormUI();
+    }
+
+    function updateTextNormUI() {
+      if (textNormLanguage.disabled) {
+        textNormVal.textContent = 'Off';
+        textNormHint.textContent = 'Text normalization is disabled on this server.';
+        return;
+      }
+      const code = textNormLanguage.value;
+      if (!code) {
+        textNormVal.textContent = 'Off';
+        textNormHint.textContent = 'Raw text is byte-tokenized without verbalizing numbers or dates.';
+        return;
+      }
+      textNormVal.textContent = TEXT_NORM_LABELS[code] || code;
+      textNormHint.textContent = 'Verbalizes numbers, dates and currency before synthesis.';
+    }
+
+    // ─── Quality conditioning ───
+    function qualityFeatures() {
+      const features = state.speakerCapabilities.quality_features;
+      return Array.isArray(features) ? features.map(feature => String(feature)) : [];
+    }
+
+    function qualityBucketLabels(feature) {
+      const buckets = state.speakerCapabilities.quality_buckets || {};
+      const labels = buckets[feature];
+      return Array.isArray(labels) ? labels.map(label => String(label)) : [];
+    }
+
+    function qualityDropoutLabel(feature) {
+      const dropouts = state.speakerCapabilities.quality_dropout_by_feature || {};
+      const dropout = parseFloat(dropouts[feature]);
+      return Number.isFinite(dropout) && dropout > 0 ? ` · drop ${(dropout * 100).toFixed(0)}%` : '';
+    }
+
+    function qualityBucketSelects() {
+      return Array.from(qualityFeatureList.querySelectorAll('.quality-bucket-select'));
+    }
+
+    const defaultQualityFeature = 'trailing_silence_s';
+    const defaultQualityBucket = 3;
+
+    function renderQualityBuckets() {
+      const previous = new Map(
+        qualityBucketSelects().map(select => [select.dataset.feature, select.value]),
+      );
+      const features = qualityFeatures();
+
+      qualityFeatureList.innerHTML = '';
+      for (const feature of features) {
+        const labels = qualityBucketLabels(feature);
+        if (!labels.length) continue;
+
+        const row = document.createElement('div');
+        row.className = 'quality-feature-row';
+
+        const label = document.createElement('div');
+        label.className = 'quality-feature-label';
+        label.textContent = feature;
+
+        const select = document.createElement('select');
+        select.className = 'param-select quality-bucket-select';
+        select.dataset.feature = feature;
+        select.disabled = true;
+        const offOption = document.createElement('option');
+        offOption.value = '';
+        offOption.textContent = `Off${qualityDropoutLabel(feature)}`;
+        select.appendChild(offOption);
+        for (let i = 0; i < labels.length; i++) {
+          const option = document.createElement('option');
+          option.value = `${i}`;
+          option.textContent = labels[i] ? `Bin ${i} (${labels[i]})` : `Bin ${i}`;
+          select.appendChild(option);
+        }
+
+        if (previous.has(feature)) {
+          const previousValue = previous.get(feature);
+          const previousBucket = parseInt(previousValue);
+          select.value = previousValue === '' || !Number.isFinite(previousBucket)
+            ? ''
+            : `${Math.min(Math.max(previousBucket, 0), labels.length - 1)}`;
+        } else if (feature === defaultQualityFeature && labels.length > defaultQualityBucket) {
+          select.value = `${defaultQualityBucket}`;
+        } else {
+          select.value = '';
+        }
+        select.addEventListener('change', updateQualityUI);
+
+        row.appendChild(label);
+        row.appendChild(select);
+        qualityFeatureList.appendChild(row);
+      }
+
+      if (qualityBucketSelects().length > 0) {
+        if (!state.qualityInitialized) {
+          qualityEnabled.checked = true;
+          state.qualityInitialized = true;
+        }
+      } else {
+        state.qualityInitialized = false;
+      }
+      updateQualityUI();
+    }
+
+    function updateQualityUI() {
+      const selects = qualityBucketSelects();
+      const totalBuckets = Math.max(0, parseInt(state.speakerCapabilities.quality_num_buckets || 0));
+      const supported = selects.length > 0 && totalBuckets > 0;
+      if (!supported) {
+        qualityEnabled.checked = false;
+      }
+
+      qualityEnabled.disabled = !supported;
+      qualityEnabledWrap.classList.toggle('is-disabled', !supported);
+      selects.forEach(select => {
+        select.disabled = !supported || !qualityEnabled.checked;
+      });
+
+      if (!supported) {
+        qualityBucketVal.textContent = 'Off';
+        qualityHint.textContent = 'Current model does not expose quality feature bins.';
+        return;
+      }
+
+      if (!qualityEnabled.checked) {
+        qualityBucketVal.textContent = 'Off';
+        qualityHint.textContent = `${totalBuckets} model ${totalBuckets === 1 ? 'bin is' : 'bins are'} available across ${selects.length} quality ${selects.length === 1 ? 'feature' : 'features'}.`;
+        return;
+      }
+
+      const active = selects.filter(select => select.value !== '').length;
+      qualityBucketVal.textContent = `${active}/${selects.length}`;
+      qualityHint.textContent = active
+        ? 'Selected quality feature tokens are prepended to the prompt.'
+        : 'All quality feature tokens are omitted.';
+    }
+
+    // ─── Voice marker toggles ───
+    function updateCleanBackgroundUI() {
+      const supported = !!state.speakerCapabilities.speaker_background_token_enabled;
+      cleanBackground.disabled = !supported;
+      cleanBackgroundWrap.classList.toggle('is-disabled', !supported);
+
+      if (!supported) {
+        cleanBackgroundVal.textContent = 'Unavailable';
+        cleanBackgroundHint.textContent = 'Current model does not expose the background marker.';
+        return;
+      }
+
+      cleanBackgroundVal.textContent = cleanBackground.checked ? 'Clean' : 'Noisy';
+      cleanBackgroundHint.textContent = cleanBackground.checked
+        ? 'The reference voice is marked as recorded with a clean background.'
+        : 'The reference voice is marked as possibly having background noise.';
+    }
+
+    function updateAccurateModeUI() {
+      const supported = !!state.speakerCapabilities.accurate_mode_token_enabled;
+      accurateMode.disabled = !supported;
+      accurateModeWrap.classList.toggle('is-disabled', !supported);
+
+      if (!supported) {
+        accurateModeVal.textContent = 'Unavailable';
+        accurateModeLabel.textContent = 'Accurate mode';
+        accurateModeHint.textContent = 'Current model does not expose the accurate-mode marker.';
+        return;
+      }
+
+      const label = accurateMode.checked ? 'Accurate mode' : 'Expressive mode';
+      accurateModeVal.textContent = label;
+      accurateModeLabel.textContent = label;
+      accurateModeHint.textContent = accurateMode.checked
+        ? 'Accurate mode: closer adherence to the reference voice.'
+        : 'Expressive mode: more expressive, less literal voice match.';
+    }
+
+    const speakerBlend = $('speakerBlend');
+    const speakerBlendVal = $('speakerBlendVal');
+    const speakerBlendCaption = $('speakerBlendCaption');
+    const speakerHint = $('speakerHint');
+    const speakerLibraryStatus = $('speakerLibraryStatus');
+    const speakerLibrary = $('speakerLibrary');
+
+    // ─── Canvas Setup ───
+    function resizeCanvas() {
+      const wrap = $('waveformWrap');
+      const dpr = window.devicePixelRatio || 1;
+      const rect = wrap.getBoundingClientRect();
+      canvas.width = rect.width * dpr;
+      canvas.height = rect.height * dpr;
+      canvas.style.width = rect.width + 'px';
+      canvas.style.height = rect.height + 'px';
+      ctx.scale(dpr, dpr);
+      drawWaveform();
+    }
+    window.addEventListener('resize', resizeCanvas);
+    resizeCanvas();
+
+    // ─── Waveform Drawing ───
+    function drawWaveform(cursorPos) {
+      const w = canvas.clientWidth;
+      const h = canvas.clientHeight;
+      const dpr = window.devicePixelRatio || 1;
+
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, w, h);
+
+      // Background
+      ctx.fillStyle = '#08070C';
+      ctx.fillRect(0, 0, w, h);
+
+      // Grid lines
+      ctx.strokeStyle = 'rgba(217, 162, 59, 0.04)';
+      ctx.lineWidth = 1;
+      const gridH = 6;
+      for (let i = 1; i < gridH; i++) {
+        const y = (h / gridH) * i;
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(w, y);
+        ctx.stroke();
+      }
+
+      // Center line
+      ctx.strokeStyle = 'rgba(217, 162, 59, 0.1)';
+      ctx.beginPath();
+      ctx.moveTo(0, h / 2);
+      ctx.lineTo(w, h / 2);
+      ctx.stroke();
+
+      if (!state.allSamples || state.allSamples.length === 0) return;
+
+      const samples = state.allSamples;
+      const samplesPerPixel = Math.max(1, Math.floor(samples.length / w));
+      const mid = h / 2;
+      const amp = h * 0.42;
+
+      // Waveform fill
+      ctx.beginPath();
+      ctx.moveTo(0, mid);
+
+      const points = Math.min(w, Math.ceil(samples.length / samplesPerPixel));
+
+      // Top half
+      for (let i = 0; i < points; i++) {
+        const start = i * samplesPerPixel;
+        let max = 0;
+        for (let j = start; j < start + samplesPerPixel && j < samples.length; j++) {
+          const abs = Math.abs(samples[j]);
+          if (abs > max) max = abs;
+        }
+        ctx.lineTo(i, mid - max * amp);
+      }
+
+      // Bottom half (mirror)
+      for (let i = points - 1; i >= 0; i--) {
+        const start = i * samplesPerPixel;
+        let max = 0;
+        for (let j = start; j < start + samplesPerPixel && j < samples.length; j++) {
+          const abs = Math.abs(samples[j]);
+          if (abs > max) max = abs;
+        }
+        ctx.lineTo(i, mid + max * amp);
+      }
+
+      ctx.closePath();
+
+      // Gradient fill
+      const grad = ctx.createLinearGradient(0, mid - amp, 0, mid + amp);
+      grad.addColorStop(0, 'rgba(217, 162, 59, 0.0)');
+      grad.addColorStop(0.3, 'rgba(217, 162, 59, 0.15)');
+      grad.addColorStop(0.5, 'rgba(217, 162, 59, 0.25)');
+      grad.addColorStop(0.7, 'rgba(217, 162, 59, 0.15)');
+      grad.addColorStop(1, 'rgba(217, 162, 59, 0.0)');
+      ctx.fillStyle = grad;
+      ctx.fill();
+
+      // Waveform stroke (top edge only for clarity)
+      ctx.beginPath();
+      for (let i = 0; i < points; i++) {
+        const start = i * samplesPerPixel;
+        let max = 0;
+        for (let j = start; j < start + samplesPerPixel && j < samples.length; j++) {
+          const abs = Math.abs(samples[j]);
+          if (abs > max) max = abs;
+        }
+        if (i === 0) ctx.moveTo(i, mid - max * amp);
+        else ctx.lineTo(i, mid - max * amp);
+      }
+      ctx.strokeStyle = 'rgba(217, 162, 59, 0.6)';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+
+      // Bottom stroke
+      ctx.beginPath();
+      for (let i = 0; i < points; i++) {
+        const start = i * samplesPerPixel;
+        let max = 0;
+        for (let j = start; j < start + samplesPerPixel && j < samples.length; j++) {
+          const abs = Math.abs(samples[j]);
+          if (abs > max) max = abs;
+        }
+        if (i === 0) ctx.moveTo(i, mid + max * amp);
+        else ctx.lineTo(i, mid + max * amp);
+      }
+      ctx.strokeStyle = 'rgba(217, 162, 59, 0.4)';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+
+      // Playback cursor
+      if (typeof cursorPos === 'number' && cursorPos >= 0) {
+        const x = cursorPos * w;
+        ctx.strokeStyle = '#E5E0D8';
+        ctx.lineWidth = 1.5;
+        ctx.shadowColor = 'rgba(229, 224, 216, 0.5)';
+        ctx.shadowBlur = 6;
+        ctx.beginPath();
+        ctx.moveTo(x, 8);
+        ctx.lineTo(x, h - 8);
+        ctx.stroke();
+        ctx.shadowBlur = 0;
+
+        // Played region tint
+        ctx.fillStyle = 'rgba(217, 162, 59, 0.05)';
+        ctx.fillRect(0, 0, x, h);
+      }
+    }
+
+    // ─── Time Formatting ───
+    function formatTime(seconds) {
+      const m = Math.floor(seconds / 60);
+      const s = Math.floor(seconds % 60);
+      return `${m}:${s.toString().padStart(2, '0')}`;
+    }
+
+    function updateTimeDisplay(current, total) {
+      timeDisplay.textContent = `${formatTime(current)} / ${formatTime(total)}`;
+    }
+
+    // ─── Audio Context ───
+    function ensureAudioCtx() {
+      if (!state.audioCtx) {
+        state.audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 44100 });
+        state.gainNode = state.audioCtx.createGain();
+        state.gainNode.connect(state.audioCtx.destination);
+        state.gainNode.gain.value = parseFloat(volumeSlider.value);
+      }
+      if (state.audioCtx.state === 'suspended') state.audioCtx.resume();
+    }
+
+    function fileToDataUrl(file, errorMessage = 'Failed to read selected file') {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = () => reject(new Error(errorMessage));
+        reader.readAsDataURL(file);
+      });
+    }
+
+    async function readErrorMessage(res, fallback = 'Request failed') {
+      try {
+        const text = await res.text();
+        if (text) {
+          try {
+            const data = JSON.parse(text);
+            if (typeof data?.detail === 'string' && data.detail) return data.detail;
+          } catch (_) {}
+          return text;
+        }
+      } catch (_) {}
+      return fallback;
+    }
+
+    function escapeHtml(value) {
+      return String(value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function getSpeakerSessionId() {
+      if (state.speakerSessionId) return state.speakerSessionId;
+      let sessionId = null;
+      try {
+        sessionId = window.sessionStorage.getItem('zonos2-tts-speaker-session-id');
+      } catch (_) {}
+      if (!sessionId) {
+        if (window.crypto && typeof window.crypto.randomUUID === 'function') {
+          sessionId = window.crypto.randomUUID();
+        } else {
+          sessionId = `speaker-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+        }
+        try {
+          window.sessionStorage.setItem('zonos2-tts-speaker-session-id', sessionId);
+        } catch (_) {}
+      }
+      state.speakerSessionId = sessionId;
+      return sessionId;
+    }
+
+    function speakerRequestHeaders(includeContentType = false) {
+      const headers = { 'X-TTS-Session-ID': getSpeakerSessionId() };
+      if (includeContentType) headers['Content-Type'] = 'application/json';
+      return headers;
+    }
+
+    function setSpeakerStatus(message = '', tone = '') {
+      speakerLibraryStatus.textContent = message;
+      speakerLibraryStatus.className = 'speaker-library-status';
+      if (tone) speakerLibraryStatus.classList.add(tone);
+    }
+
+    function getSpeakerById(id) {
+      if (!id) return null;
+      return state.speakerLibrary.find((speaker) => speaker.id === id) || null;
+    }
+
+    function stopSpeakerPreview() {
+      if (state.previewAudio) {
+        state.previewAudio.pause();
+        state.previewAudio.currentTime = 0;
+        state.previewAudio = null;
+      }
+      if (state.previewSpeakerId) {
+        state.previewSpeakerId = null;
+        renderSpeakerLibrary();
+        updateSpeakerBlendUI();
+      }
+    }
+
+    async function getSpeakerPreviewUrl(speakerId) {
+      if (state.speakerPreviewUrls.has(speakerId)) {
+        return state.speakerPreviewUrls.get(speakerId);
+      }
+      const endpoint = $('endpoint').value.replace(/\/+$/, '');
+      const res = await fetch(`${endpoint}/tts/speakers/${encodeURIComponent(speakerId)}/preview`, {
+        headers: speakerRequestHeaders(),
+      });
+      if (!res.ok) {
+        throw new Error(await readErrorMessage(res, 'Failed to load speaker preview audio'));
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      state.speakerPreviewUrls.set(speakerId, url);
+      return url;
+    }
+
+    async function toggleSpeakerPreview(speakerId) {
+      if (!speakerId) return;
+      if (state.previewSpeakerId === speakerId && state.previewAudio) {
+        stopSpeakerPreview();
+        return;
+      }
+
+      stopSpeakerPreview();
+
+      try {
+        const url = await getSpeakerPreviewUrl(speakerId);
+        const audio = new Audio(url);
+        state.previewAudio = audio;
+        state.previewSpeakerId = speakerId;
+        audio.addEventListener('ended', () => {
+          if (state.previewAudio === audio) {
+            state.previewAudio = null;
+            state.previewSpeakerId = null;
+            renderSpeakerLibrary();
+            updateSpeakerBlendUI();
+          }
+        });
+        await audio.play();
+      } catch (err) {
+        state.previewAudio = null;
+        state.previewSpeakerId = null;
+        setSpeakerStatus(err.message || 'Failed to play speaker preview', 'error');
+      }
+
+      renderSpeakerLibrary();
+      updateSpeakerBlendUI();
+    }
+
+    function mergeCachedSpeaker(speaker) {
+      state.speakerLibrary = [
+        speaker,
+        ...state.speakerLibrary.filter((item) => item.id !== speaker.id),
+      ];
+    }
+
+    function ensureValidSpeakerSelections() {
+      const validIds = new Set(state.speakerLibrary.map((speaker) => speaker.id));
+      if (speakerASelect.value && !validIds.has(speakerASelect.value)) speakerASelect.value = '';
+      if (speakerBSelect.value && !validIds.has(speakerBSelect.value)) speakerBSelect.value = '';
+    }
+
+    function renderSpeakerSelectOptions() {
+      const currentA = speakerASelect.value;
+      const currentB = speakerBSelect.value;
+      const options = [
+        '<option value="">None</option>',
+        ...state.speakerLibrary.map((speaker) => (
+          `<option value="${escapeHtml(speaker.id)}">${escapeHtml(speaker.label)} (${escapeHtml(speaker.is_default ? 'default' : speaker.source_type)})</option>`
+        )),
+      ].join('');
+      speakerASelect.innerHTML = options;
+      speakerBSelect.innerHTML = options;
+      speakerASelect.value = currentA && getSpeakerById(currentA) ? currentA : '';
+      speakerBSelect.value = currentB && getSpeakerById(currentB) ? currentB : '';
+    }
+
+    function newestSpeakerByCreatedAt(speakers) {
+      let newest = null;
+      let newestCreatedAt = -Infinity;
+      for (const speaker of speakers) {
+        const createdAt = Number(speaker.created_at);
+        const sortableCreatedAt = Number.isFinite(createdAt) ? createdAt : -Infinity;
+        if (!newest || sortableCreatedAt >= newestCreatedAt) {
+          newest = speaker;
+          newestCreatedAt = sortableCreatedAt;
+        }
+      }
+      return newest;
+    }
+
+    const PREFERRED_DEFAULT_VOICE = 'britishfemale';
+
+    function autoSelectInitialSpeaker() {
+      if (
+        state.speakerInitialSelectionApplied
+        || state.speakerSelectionTouched
+        || speakerASelect.value
+        || speakerBSelect.value
+      ) {
+        return;
+      }
+
+      const preferredDefault = state.speakerLibrary.find(
+        (speaker) => speaker.is_default
+          && String(speaker.label).toLowerCase() === PREFERRED_DEFAULT_VOICE
+      );
+      const uploadedSpeakers = state.speakerLibrary.filter((speaker) => !speaker.is_default);
+      const initialSpeaker = preferredDefault
+        || newestSpeakerByCreatedAt(uploadedSpeakers)
+        || newestSpeakerByCreatedAt(state.speakerLibrary);
+      if (!initialSpeaker) return;
+
+      speakerASelect.value = initialSpeaker.id;
+      state.speakerInitialSelectionApplied = true;
+    }
+
+    function renderSpeakerLibrary() {
+      if (!state.speakerLibrary.length) {
+        speakerLibrary.innerHTML = '<div class="speaker-library-empty">No default or cached speaker voices yet.</div>';
+        return;
+      }
+
+      const speakerAId = speakerASelect.value;
+      const speakerBId = speakerBSelect.value;
+      speakerLibrary.innerHTML = state.speakerLibrary.map((speaker) => {
+        const previewLabel = state.previewSpeakerId === speaker.id ? 'Stop' : 'Preview';
+        const isA = speaker.id === speakerAId;
+        const isB = speaker.id === speakerBId;
+        const chips = [
+          speaker.is_default ? '<span class="speaker-chip active">Default</span>' : '',
+          `<span class="speaker-chip">${escapeHtml(speaker.source_type)}</span>`,
+          `<span class="speaker-chip">${escapeHtml(`${speaker.dimension}D`)}</span>`,
+          speaker.original_name ? `<span class="speaker-chip">${escapeHtml(speaker.original_name)}</span>` : '',
+          isA ? '<span class="speaker-chip active">Speaker A</span>' : '',
+          isB ? '<span class="speaker-chip active">Speaker B</span>' : '',
+        ].filter(Boolean).join('');
+        return `
+          <div class="speaker-library-item">
+            <div class="speaker-library-info">
+              <div class="speaker-title">${escapeHtml(speaker.label)}</div>
+              <div class="speaker-badges">${chips}</div>
+            </div>
+            <div class="speaker-item-actions">
+              <button type="button" class="speaker-action-btn ${isA ? 'active' : ''}" data-action="assign-a" data-speaker-id="${escapeHtml(speaker.id)}">Use A</button>
+              <button type="button" class="speaker-action-btn ${isB ? 'active' : ''}" data-action="assign-b" data-speaker-id="${escapeHtml(speaker.id)}">Use B</button>
+              <button type="button" class="speaker-action-btn" data-action="preview" data-speaker-id="${escapeHtml(speaker.id)}" ${speaker.has_preview ? '' : 'disabled'}>${previewLabel}</button>
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    function updateSpeakerBlendUI() {
+      ensureValidSpeakerSelections();
+      const speakerA = getSpeakerById(speakerASelect.value);
+      const speakerB = getSpeakerById(speakerBSelect.value);
+      const canBlend = !!(speakerA && speakerB);
+
+      speakerBlendVal.textContent = parseFloat(speakerBlend.value).toFixed(2);
+      speakerBlend.disabled = !state.speakerCapabilities.speaker_enabled || !canBlend;
+      speakerAPlay.disabled = !(speakerA && speakerA.has_preview);
+      speakerBPlay.disabled = !(speakerB && speakerB.has_preview);
+      speakerAPlay.textContent = state.previewSpeakerId && speakerA && state.previewSpeakerId === speakerA.id
+        ? 'Stop'
+        : 'Preview';
+      speakerBPlay.textContent = state.previewSpeakerId && speakerB && state.previewSpeakerId === speakerB.id
+        ? 'Stop'
+        : 'Preview';
+
+      if (canBlend) {
+        speakerBlendCaption.textContent = `${speakerA.label} -> ${speakerB.label}. 0.00 keeps Speaker A, 1.00 becomes Speaker B.`;
+      } else if (speakerA || speakerB) {
+        const activeSpeaker = speakerA || speakerB;
+        speakerBlendCaption.textContent = `Using ${activeSpeaker.label}. Pick a second speaker to SLERP between two voices.`;
+      } else {
+        speakerBlendCaption.textContent = 'Pick two cached speakers to SLERP between them.';
+      }
+    }
+
+    async function refreshSpeakerLibrary() {
+      if (!state.speakerCapabilities.speaker_enabled) {
+        state.speakerLibrary = [];
+        renderSpeakerSelectOptions();
+        renderSpeakerLibrary();
+        updateSpeakerBlendUI();
+        return;
+      }
+
+      const endpoint = $('endpoint').value.replace(/\/+$/, '');
+      try {
+        const res = await fetch(`${endpoint}/tts/speakers`, {
+          headers: speakerRequestHeaders(),
+        });
+        if (!res.ok) throw new Error(await readErrorMessage(res, 'Failed to load cached speakers'));
+        const payload = await res.json();
+        state.speakerLibrary = Array.isArray(payload.speakers) ? payload.speakers : [];
+        renderSpeakerSelectOptions();
+        autoSelectInitialSpeaker();
+        renderSpeakerLibrary();
+        updateSpeakerBlendUI();
+      } catch (err) {
+        state.speakerLibrary = [];
+        renderSpeakerSelectOptions();
+        renderSpeakerLibrary();
+        updateSpeakerBlendUI();
+        setSpeakerStatus(err.message || 'Failed to load cached speakers', 'error');
+      }
+    }
+
+    function autoAssignSpeakers(addedSpeakers) {
+      if (!addedSpeakers.length) return;
+      speakerASelect.value = addedSpeakers[addedSpeakers.length - 1].id;
+      state.speakerInitialSelectionApplied = true;
+    }
+
+    async function cacheSpeakerFile(file, kind) {
+      const body = { label: file.name.replace(/\.[^.]+$/, '') };
+      if (kind === 'audio') {
+        body.speaker_audio_base64 = await fileToDataUrl(file, 'Failed to read reference audio file');
+        body.speaker_audio_name = file.name;
+      } else {
+        body.speaker_embedding_base64 = await fileToDataUrl(file, 'Failed to read speaker embedding file');
+        body.speaker_embedding_name = file.name;
+      }
+
+      const endpoint = $('endpoint').value.replace(/\/+$/, '');
+      const res = await fetch(`${endpoint}/tts/speakers`, {
+        method: 'POST',
+        headers: speakerRequestHeaders(true),
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) {
+        throw new Error(await readErrorMessage(res, 'Failed to cache speaker reference'));
+      }
+
+      const speaker = await res.json();
+      mergeCachedSpeaker(speaker);
+      return speaker;
+    }
+
+    async function handleSpeakerUploads(files, kind) {
+      const entries = Array.from(files || []);
+      if (!entries.length) return;
+
+      if (!state.speakerCapabilities.speaker_enabled) {
+        setSpeakerStatus('Current model does not support speaker embeddings.', 'error');
+        return;
+      }
+
+      setSpeakerStatus(
+        `Caching ${entries.length} ${entries.length === 1 ? 'speaker' : 'speakers'}...`,
+        'busy',
+      );
+
+      const addedSpeakers = [];
+      try {
+        for (const file of entries) {
+          if (kind === 'embedding') {
+            const lowerName = file.name.toLowerCase();
+            if (!(lowerName.endsWith('.npy') || lowerName.endsWith('.npz'))) {
+              throw new Error(`${file.name} must be a .npy or .npz embedding file.`);
+            }
+          }
+          const speaker = await cacheSpeakerFile(file, kind);
+          addedSpeakers.push(speaker);
+        }
+
+        autoAssignSpeakers(addedSpeakers);
+        renderSpeakerSelectOptions();
+        renderSpeakerLibrary();
+        updateSpeakerBlendUI();
+        setSpeakerStatus(
+          `Cached ${addedSpeakers.length} ${addedSpeakers.length === 1 ? 'speaker' : 'speakers'} for this session.`,
+          'success',
+        );
+      } catch (err) {
+        setSpeakerStatus(err.message || 'Failed to cache speaker reference', 'error');
+      }
+    }
+
+    async function refreshSpeakerCapability() {
+      const endpoint = $('endpoint').value.replace(/\/+$/, '');
+      try {
+        const res = await fetch(`${endpoint}/tts/capabilities`);
+        if (!res.ok) throw new Error('capability request failed');
+        const caps = await res.json();
+        state.speakerCapabilities = {
+          speaker_enabled: !!caps.speaker_enabled,
+          speaker_embedding_dim: caps.speaker_embedding_dim || null,
+          n_codebooks: caps.n_codebooks || 9,
+          max_tokens: parseInt(caps.max_tokens || 4096),
+          speaking_rate_num_buckets: parseInt(caps.speaking_rate_num_buckets || 0),
+          speaking_rate_buckets: Array.isArray(caps.speaking_rate_buckets) ? caps.speaking_rate_buckets : [],
+          quality_num_buckets: parseInt(caps.quality_num_buckets || 0),
+          quality_features: Array.isArray(caps.quality_features) ? caps.quality_features : [],
+          quality_buckets: caps.quality_buckets && typeof caps.quality_buckets === 'object' ? caps.quality_buckets : {},
+          quality_dropout_by_feature: caps.quality_dropout_by_feature && typeof caps.quality_dropout_by_feature === 'object' ? caps.quality_dropout_by_feature : {},
+          speaker_background_token_enabled: !!caps.speaker_background_token_enabled,
+          accurate_mode_token_enabled: !!caps.accurate_mode_token_enabled,
+          text_normalization_enabled: caps.text_normalization_enabled !== false,
+          text_norm_languages: Array.isArray(caps.text_norm_languages) ? caps.text_norm_languages : [],
+        };
+        if (state.speakerCapabilities.speaker_enabled) {
+          speakerAudioUpload.disabled = false;
+          speakerEmbeddingUpload.disabled = false;
+          speakerASelect.disabled = false;
+          speakerBSelect.disabled = false;
+          const dim = state.speakerCapabilities.speaker_embedding_dim;
+          const dimLabel = dim ? `${dim}D` : 'speaker';
+          speakerHint.textContent = `Optional. Pick a default voice, upload speaker audio to cache a ${dimLabel} embedding for this session, or import saved .npy/.npz embeddings. Select Speaker A and Speaker B to SLERP between them.`;
+          await refreshSpeakerLibrary();
+        } else {
+          stopSpeakerPreview();
+          speakerAudioUpload.value = '';
+          speakerEmbeddingUpload.value = '';
+          speakerAudioUpload.disabled = true;
+          speakerEmbeddingUpload.disabled = true;
+          speakerASelect.value = '';
+          speakerBSelect.value = '';
+          speakerASelect.disabled = true;
+          speakerBSelect.disabled = true;
+          state.speakerLibrary = [];
+          renderSpeakerSelectOptions();
+          renderSpeakerLibrary();
+          speakerHint.textContent = 'Current model does not support speaker cloning. Speaker caching and blending are disabled.';
+          setSpeakerStatus('');
+          updateSpeakerBlendUI();
+        }
+        updateMaxTokensUI();
+        updateRepetitionCodebooksUI();
+        renderSpeakingRateBuckets();
+        renderQualityBuckets();
+        renderTextNormLanguages();
+        updateCleanBackgroundUI();
+        updateAccurateModeUI();
+      } catch (_) {
+        state.speakerCapabilities = {
+          speaker_enabled: true,
+          speaker_embedding_dim: null,
+          n_codebooks: 9,
+          max_tokens: 4096,
+          speaking_rate_num_buckets: 0,
+          speaking_rate_buckets: [],
+          quality_num_buckets: 0,
+          quality_features: [],
+          quality_buckets: {},
+          quality_dropout_by_feature: {},
+          speaker_background_token_enabled: false,
+          accurate_mode_token_enabled: false,
+          text_normalization_enabled: true,
+          text_norm_languages: [],
+        };
+        speakerAudioUpload.disabled = false;
+        speakerEmbeddingUpload.disabled = false;
+        speakerASelect.disabled = false;
+        speakerBSelect.disabled = false;
+        speakerHint.textContent = 'Optional. Pick a default voice, upload speaker audio to cache embeddings for this session, or import saved .npy/.npz embeddings.';
+        updateMaxTokensUI();
+        updateRepetitionCodebooksUI();
+        renderSpeakingRateBuckets();
+        renderQualityBuckets();
+        renderTextNormLanguages();
+        updateCleanBackgroundUI();
+        updateAccurateModeUI();
+        await refreshSpeakerLibrary();
+      }
+    }
+
+    // ─── Generate ───
+    async function generate() {
+      if (state.isGenerating) {
+        stopGeneration();
+        return;
+      }
+
+      const rawText = textInput.value;
+      const text = rawText;
+      if (!text.length) return;
+
+      ensureAudioCtx();
+      stopPlayback();
+      stopSpeakerPreview();
+
+      state.isGenerating = true;
+      state.allSamples = null;
+      state.audioBuffer = null;
+      state.abortController = new AbortController();
+      state.genStartTime = performance.now();
+      state.ttfb = 0;
+
+      btnGenerate.textContent = 'STOP';
+      btnGenerate.classList.add('generating');
+      btnPlay.disabled = true;
+      btnStop.disabled = true;
+      btnRewind.disabled = true;
+      btnDownload.disabled = true;
+      statusDot.className = 'status-dot streaming';
+      statusText.textContent = 'STREAMING';
+      metricsEl.innerHTML = '';
+      drawWaveform();
+
+      const endpoint = $('endpoint').value.replace(/\/+$/, '');
+      const seedVal = $('seed').value.trim();
+      const speakerAId = speakerASelect.value || null;
+      const speakerBId = speakerBSelect.value || null;
+      const hasSpeakerBlend = !!(speakerAId && speakerBId);
+      const speakerEmbeddingId = hasSpeakerBlend ? null : (speakerAId || speakerBId || null);
+      const speakingRateNumBuckets = Math.max(0, parseInt(state.speakerCapabilities.speaking_rate_num_buckets || 0));
+      const useSpeakingRateBucket = speakingRateEnabled.checked && speakingRateNumBuckets > 0;
+      const useQualityBuckets = qualityEnabled.checked && qualityBucketSelects().length > 0;
+      const backgroundTokenEnabled = !!state.speakerCapabilities.speaker_background_token_enabled;
+      const accurateModeTokenEnabled = !!state.speakerCapabilities.accurate_mode_token_enabled;
+
+      const body = {
+        text,
+        language: textNormLanguage.value || 'en_us',
+        text_normalization: !!textNormLanguage.value,
+        temperature: parseFloat($('temperature').value),
+        topk: parseInt($('topk').value),
+        top_p: parseFloat($('topp').value),
+        min_p: parseFloat($('minp').value),
+        max_tokens: parseInt($('maxtokens').value),
+        fade_out_ms: parseFloat($('fadeout').value),
+        speaking_rate_enabled: useSpeakingRateBucket,
+        quality_enabled: useQualityBuckets,
+        quality_buckets: null,
+        repetition_window: parseInt($('repwindow').value),
+        repetition_penalty: parseFloat($('reppenalty').value),
+        repetition_codebooks: parseInt($('repcodebooks').value),
+        seed: seedVal ? parseInt(seedVal) : null,
+        stream: true,
+        speaker_embedding_id: speakerEmbeddingId,
+        clean_speaker_background: backgroundTokenEnabled ? cleanBackground.checked : false,
+        accurate_mode: accurateModeTokenEnabled ? accurateMode.checked : true,
+        speaker_blend_embedding_id_a: hasSpeakerBlend ? speakerAId : null,
+        speaker_blend_embedding_id_b: hasSpeakerBlend ? speakerBId : null,
+        speaker_blend_t: hasSpeakerBlend ? parseFloat(speakerBlend.value) : null,
+      };
+
+      if (useSpeakingRateBucket) {
+        body.speaking_rate_bucket = Math.min(
+          Math.max(parseInt(speakingRateBucket.value) || 0, 0),
+          speakingRateNumBuckets - 1,
+        );
+      }
+      if (useQualityBuckets) {
+        const selectedQualityBuckets = {};
+        qualityBucketSelects().forEach(select => {
+          if (select.value !== '') {
+            selectedQualityBuckets[select.dataset.feature] = parseInt(select.value) || 0;
+          }
+        });
+        body.quality_buckets = selectedQualityBuckets;
+      }
+
+      try {
+        const res = await fetch(`${endpoint}/tts/generate`, {
+          method: 'POST',
+          headers: speakerRequestHeaders(true),
+          body: JSON.stringify(body),
+          signal: state.abortController.signal,
+        });
+
+        if (!res.ok) {
+          const errText = await res.text();
+          throw new Error(`Server error ${res.status}: ${errText}`);
+        }
+
+        const reader = res.body.getReader();
+        const chunks = [];
+        let totalBytes = 0;
+        let firstChunk = true;
+        let remainder = new Uint8Array(0);
+
+        // Start streaming playback immediately
+        state.streamingSources = [];
+        state.streamingStartTime = state.audioCtx.currentTime + 0.08;
+        state.streamingNextTime = state.streamingStartTime;
+        state.streamingPlaying = true;
+        state.isPlaying = true;
+        updatePlayButton();
+        btnStop.disabled = false;
+        tickStreaming();
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          if (firstChunk) {
+            state.ttfb = performance.now() - state.genStartTime;
+            firstChunk = false;
+          }
+
+          chunks.push(value);
+          totalBytes += value.byteLength;
+
+          // Combine with remainder for float32 alignment
+          const merged = new Uint8Array(remainder.byteLength + value.byteLength);
+          merged.set(remainder, 0);
+          merged.set(value, remainder.byteLength);
+          const alignedLen = Math.floor(merged.byteLength / 4) * 4;
+
+          if (alignedLen > 0) {
+            const float32Chunk = new Float32Array(merged.buffer.slice(0, alignedLen));
+
+            // Schedule chunk for immediate playback
+            const src = state.audioCtx.createBufferSource();
+            const buf = state.audioCtx.createBuffer(1, float32Chunk.length, 44100);
+            buf.getChannelData(0).set(float32Chunk);
+            src.buffer = buf;
+            src.connect(state.gainNode);
+            const t = Math.max(state.streamingNextTime, state.audioCtx.currentTime);
+            src.start(t);
+            state.streamingNextTime = t + buf.duration;
+            state.streamingSources.push(src);
+          }
+
+          remainder = merged.byteLength > alignedLen
+            ? merged.slice(alignedLen) : new Uint8Array(0);
+
+          // Build full sample array for visualization
+          const allCombined = new Uint8Array(totalBytes);
+          let off = 0;
+          for (const c of chunks) { allCombined.set(c, off); off += c.byteLength; }
+          const allAligned = Math.floor(totalBytes / 4) * 4;
+          state.allSamples = new Float32Array(allCombined.buffer, 0, allAligned / 4);
+        }
+
+        // Final assembly
+        const combined = new Uint8Array(totalBytes);
+        let off = 0;
+        for (const c of chunks) { combined.set(c, off); off += c.byteLength; }
+        const alignedLen = Math.floor(totalBytes / 4) * 4;
+        state.allSamples = new Float32Array(combined.buffer.slice(0, alignedLen));
+
+        if (state.allSamples.length > 0) {
+          state.audioBuffer = state.audioCtx.createBuffer(1, state.allSamples.length, 44100);
+          state.audioBuffer.getChannelData(0).set(state.allSamples);
+        }
+
+        const e2e = performance.now() - state.genStartTime;
+        const audioDur = state.allSamples.length / 44100;
+        const rtf = audioDur / (e2e / 1000);
+
+        statusDot.className = 'status-dot ready';
+        statusText.textContent = state.streamingPlaying ? 'PLAYING' : 'READY';
+        metricsEl.innerHTML = `
+          <span class="metric-item">TTFB <span>${state.ttfb.toFixed(0)}ms</span></span>
+          <span class="metric-item">E2E <span>${(e2e / 1000).toFixed(2)}s</span></span>
+          <span class="metric-item">Audio <span>${audioDur.toFixed(2)}s</span></span>
+          <span class="metric-item">RTF <span>${rtf.toFixed(2)}x</span></span>
+        `;
+
+        btnPlay.disabled = false;
+        btnRewind.disabled = false;
+        btnDownload.disabled = !state.audioBuffer;
+
+      } catch (err) {
+        stopStreamingPlayback();
+        if (err.name !== 'AbortError') {
+          statusDot.className = 'status-dot';
+          statusText.textContent = 'ERROR';
+          metricsEl.innerHTML = `<span class="metric-item" style="color:var(--red)">${err.message}</span>`;
+        }
+      } finally {
+        state.isGenerating = false;
+        btnGenerate.textContent = 'GENERATE';
+        btnGenerate.classList.remove('generating');
+        updateGenerateButton();
+      }
+    }
+
+    function stopGeneration() {
+      if (state.abortController) {
+        state.abortController.abort();
+        state.abortController = null;
+      }
+      stopStreamingPlayback();
+      state.isGenerating = false;
+      statusDot.className = 'status-dot';
+      statusText.textContent = 'CANCELLED';
+      btnGenerate.textContent = 'GENERATE';
+      btnGenerate.classList.remove('generating');
+      updateGenerateButton();
+    }
+
+    function stopStreamingPlayback() {
+      for (const src of state.streamingSources) {
+        try { src.stop(); } catch(e) {}
+      }
+      state.streamingSources = [];
+      state.streamingPlaying = false;
+      state.isPlaying = false;
+      cancelAnimationFrame(state.animFrameId);
+      updatePlayButton();
+      if (state.audioCtx && state.audioCtx.state === 'suspended') {
+        state.audioCtx.resume();
+      }
+    }
+
+    // ─── Playback ───
+    function playAudio() {
+      // During streaming: toggle pause via context suspend/resume
+      if (state.streamingPlaying) {
+        if (state.isPlaying) {
+          state.audioCtx.suspend();
+          state.isPlaying = false;
+          updatePlayButton();
+          cancelAnimationFrame(state.animFrameId);
+        } else {
+          state.audioCtx.resume();
+          state.isPlaying = true;
+          updatePlayButton();
+          tickStreaming();
+        }
+        return;
+      }
+
+      if (!state.audioBuffer) return;
+      ensureAudioCtx();
+
+      if (state.isPlaying) {
+        pausePlayback();
+        return;
+      }
+
+      state.currentSource = state.audioCtx.createBufferSource();
+      state.currentSource.buffer = state.audioBuffer;
+      state.currentSource.connect(state.gainNode);
+      state.currentSource.onended = () => {
+        if (state.isPlaying) {
+          state.isPlaying = false;
+          state.playbackOffset = 0;
+          updatePlayButton();
+          drawWaveform();
+          updateTimeDisplay(0, state.audioBuffer.duration);
+          cancelAnimationFrame(state.animFrameId);
+        }
+      };
+
+      state.currentSource.start(0, state.playbackOffset);
+      state.playbackStartTime = state.audioCtx.currentTime - state.playbackOffset;
+      state.isPlaying = true;
+      updatePlayButton();
+      btnStop.disabled = false;
+      tickPlayback();
+    }
+
+    function pausePlayback() {
+      if (!state.isPlaying) return;
+      state.playbackOffset = state.audioCtx.currentTime - state.playbackStartTime;
+      state.currentSource.onended = null;
+      state.currentSource.stop();
+      state.currentSource = null;
+      state.isPlaying = false;
+      updatePlayButton();
+      cancelAnimationFrame(state.animFrameId);
+    }
+
+    function stopPlayback() {
+      stopStreamingPlayback();
+      if (state.currentSource) {
+        state.currentSource.onended = null;
+        state.currentSource.stop();
+        state.currentSource = null;
+      }
+      state.isPlaying = false;
+      state.playbackOffset = 0;
+      updatePlayButton();
+      btnStop.disabled = true;
+      cancelAnimationFrame(state.animFrameId);
+      if (state.audioBuffer) {
+        updateTimeDisplay(0, state.audioBuffer.duration);
+      }
+      drawWaveform();
+    }
+
+    function tickPlayback() {
+      if (!state.isPlaying || !state.audioBuffer) return;
+      const current = state.audioCtx.currentTime - state.playbackStartTime;
+      const total = state.audioBuffer.duration;
+      const pos = Math.min(current / total, 1);
+      updateTimeDisplay(current, total);
+      drawWaveform(pos);
+      state.animFrameId = requestAnimationFrame(tickPlayback);
+    }
+
+    function tickStreaming() {
+      if (!state.streamingPlaying || !state.isPlaying) return;
+      const elapsed = Math.max(0, state.audioCtx.currentTime - state.streamingStartTime);
+      const totalDur = state.allSamples ? state.allSamples.length / 44100 : 0;
+      const current = Math.min(elapsed, totalDur);
+
+      if (totalDur > 0) {
+        updateTimeDisplay(current, totalDur);
+        drawWaveform(current / totalDur);
+      }
+
+      // Detect end of playback (only after generation is done)
+      if (!state.isGenerating && totalDur > 0 && elapsed >= totalDur + 0.05) {
+        state.streamingPlaying = false;
+        state.isPlaying = false;
+        state.playbackOffset = 0;
+        state.streamingSources = [];
+        updatePlayButton();
+        statusDot.className = 'status-dot ready';
+        statusText.textContent = 'READY';
+        updateTimeDisplay(0, totalDur);
+        drawWaveform();
+        return;
+      }
+
+      state.animFrameId = requestAnimationFrame(tickStreaming);
+    }
+
+    function updatePlayButton() {
+      const icon = $('playIcon');
+      if (state.isPlaying) {
+        icon.innerHTML = '<path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/>';
+      } else {
+        icon.innerHTML = '<path d="M8 5v14l11-7z"/>';
+      }
+    }
+
+    // ─── Seek via waveform click ───
+    $('waveformWrap').addEventListener('click', (e) => {
+      if (!state.audioBuffer) return;
+      const rect = canvas.getBoundingClientRect();
+      const x = (e.clientX - rect.left) / rect.width;
+      const seekTime = x * state.audioBuffer.duration;
+
+      const wasPlaying = state.isPlaying;
+      if (state.isPlaying) {
+        state.currentSource.onended = null;
+        state.currentSource.stop();
+        state.currentSource = null;
+        state.isPlaying = false;
+      }
+
+      state.playbackOffset = seekTime;
+
+      if (wasPlaying) {
+        playAudio();
+      } else {
+        updateTimeDisplay(seekTime, state.audioBuffer.duration);
+        drawWaveform(x);
+      }
+    });
+
+    // ─── Download WAV ───
+    function downloadWav() {
+      if (!state.allSamples) return;
+      const samples = state.allSamples;
+      const sampleRate = 44100;
+      const numChannels = 1;
+      const bitsPerSample = 16;
+      const byteRate = sampleRate * numChannels * bitsPerSample / 8;
+      const blockAlign = numChannels * bitsPerSample / 8;
+      const dataSize = samples.length * blockAlign;
+      const buffer = new ArrayBuffer(44 + dataSize);
+      const v = new DataView(buffer);
+
+      const writeStr = (off, str) => { for (let i = 0; i < str.length; i++) v.setUint8(off + i, str.charCodeAt(i)); };
+
+      writeStr(0, 'RIFF');
+      v.setUint32(4, 36 + dataSize, true);
+      writeStr(8, 'WAVE');
+      writeStr(12, 'fmt ');
+      v.setUint32(16, 16, true);
+      v.setUint16(20, 1, true);
+      v.setUint16(22, numChannels, true);
+      v.setUint32(24, sampleRate, true);
+      v.setUint32(28, byteRate, true);
+      v.setUint16(32, blockAlign, true);
+      v.setUint16(34, bitsPerSample, true);
+      writeStr(36, 'data');
+      v.setUint32(40, dataSize, true);
+
+      let off = 44;
+      for (let i = 0; i < samples.length; i++) {
+        const s = Math.max(-1, Math.min(1, samples[i]));
+        v.setInt16(off, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+        off += 2;
+      }
+
+      const blob = new Blob([buffer], { type: 'audio/wav' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `tts_${Date.now()}.wav`;
+      a.click();
+      URL.revokeObjectURL(url);
+    }
+
+    // ─── Event Bindings ───
+    btnGenerate.addEventListener('click', generate);
+    btnPlay.addEventListener('click', playAudio);
+    btnStop.addEventListener('click', stopPlayback);
+    btnRewind.addEventListener('click', () => {
+      if (!state.audioBuffer) return;
+      const wasPlaying = state.isPlaying;
+      stopPlayback();
+      if (wasPlaying) playAudio();
+    });
+    btnDownload.addEventListener('click', downloadWav);
+
+    volumeSlider.addEventListener('input', () => {
+      if (state.gainNode) state.gainNode.gain.value = parseFloat(volumeSlider.value);
+    });
+
+    // Keyboard shortcut
+    document.addEventListener('keydown', (e) => {
+      if (e.target.tagName === 'TEXTAREA' || e.target.tagName === 'INPUT') return;
+      if (e.code === 'Space') {
+        e.preventDefault();
+        if (state.audioBuffer) playAudio();
+      }
+    });
+
+    // Ctrl+Enter to generate
+    textInput.addEventListener('keydown', (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+        e.preventDefault();
+        generate();
+      }
+    });
+
+    // Params toggle
+    paramsToggle.addEventListener('click', () => {
+      paramsToggle.classList.toggle('open');
+      paramsPanel.classList.toggle('open');
+    });
+
+    // Slider value displays
+    const sliderBindings = [
+      ['temperature', 'tempVal', v => parseFloat(v).toFixed(2)],
+      ['topk', 'topkVal', v => v],
+      ['topp', 'toppVal', v => parseFloat(v).toFixed(2)],
+      ['minp', 'minpVal', v => parseFloat(v).toFixed(2)],
+      ['maxtokens', 'maxtVal', v => v],
+      ['fadeout', 'fadeVal', v => `${v} ms`],
+      ['repwindow', 'repWindowVal', v => v],
+      ['reppenalty', 'repPenaltyVal', v => parseFloat(v).toFixed(2)],
+      ['repcodebooks', 'repCodebooksVal', v => v],
+    ];
+
+    sliderBindings.forEach(([sliderId, valId, fmt]) => {
+      $(sliderId).addEventListener('input', () => {
+        $(valId).textContent = fmt($(sliderId).value);
+      });
+    });
+
+    textLimitSlider.addEventListener('input', updateTextLimitUI);
+    speakerBlend.addEventListener('input', updateSpeakerBlendUI);
+    speakingRateEnabled.addEventListener('change', updateSpeakingRateUI);
+    speakingRateBucket.addEventListener('change', updateSpeakingRateUI);
+    qualityEnabled.addEventListener('change', updateQualityUI);
+    textNormLanguage.addEventListener('change', updateTextNormUI);
+    cleanBackground.addEventListener('change', updateCleanBackgroundUI);
+    accurateMode.addEventListener('change', updateAccurateModeUI);
+    speakerASelect.addEventListener('change', () => {
+      state.speakerSelectionTouched = true;
+      renderSpeakerLibrary();
+      updateSpeakerBlendUI();
+    });
+    speakerBSelect.addEventListener('change', () => {
+      state.speakerSelectionTouched = true;
+      renderSpeakerLibrary();
+      updateSpeakerBlendUI();
+    });
+    speakerAPlay.addEventListener('click', () => toggleSpeakerPreview(speakerASelect.value));
+    speakerBPlay.addEventListener('click', () => toggleSpeakerPreview(speakerBSelect.value));
+    speakerAudioUpload.addEventListener('change', async () => {
+      await handleSpeakerUploads(speakerAudioUpload.files, 'audio');
+      speakerAudioUpload.value = '';
+    });
+    speakerEmbeddingUpload.addEventListener('change', async () => {
+      await handleSpeakerUploads(speakerEmbeddingUpload.files, 'embedding');
+      speakerEmbeddingUpload.value = '';
+    });
+    speakerLibrary.addEventListener('click', async (e) => {
+      const button = e.target.closest('button[data-action]');
+      if (!button) return;
+      const speakerId = button.dataset.speakerId;
+      if (!speakerId) return;
+
+      if (button.dataset.action === 'assign-a') {
+        state.speakerSelectionTouched = true;
+        speakerASelect.value = speakerId;
+        renderSpeakerLibrary();
+        updateSpeakerBlendUI();
+        return;
+      }
+
+      if (button.dataset.action === 'assign-b') {
+        state.speakerSelectionTouched = true;
+        speakerBSelect.value = speakerId;
+        renderSpeakerLibrary();
+        updateSpeakerBlendUI();
+        return;
+      }
+
+      if (button.dataset.action === 'preview') {
+        await toggleSpeakerPreview(speakerId);
+      }
+    });
+
+    $('endpoint').addEventListener('change', async () => {
+      stopSpeakerPreview();
+      setSpeakerStatus('');
+      state.speakerInitialSelectionApplied = false;
+      state.speakerSelectionTouched = false;
+      await refreshSpeakerCapability();
+    });
+    refreshSpeakerCapability();
+    updateSpeakerBlendUI();
+    updateTextLimitUI();
+    updateMaxTokensUI();
+    updateRepetitionCodebooksUI();
+    renderSpeakingRateBuckets();
+    renderQualityBuckets();
+    renderTextNormLanguages();
+    updateCleanBackgroundUI();
+    updateAccurateModeUI();
+    updateGenerateButton();
+
+    // Disable generate when empty
+    textInput.addEventListener('input', updateTextLimitUI);
+  </script>
+</body>
+</html>
