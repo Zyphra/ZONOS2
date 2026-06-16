@@ -170,3 +170,16 @@ If you find this model useful in an academic context please cite as:
   year      = {2026},
 }
 ```
+
+## License
+
+ZONOS2 is released under the [MIT License](LICENSE).
+
+It incorporates third-party components under their own licenses — see
+[`NOTICE`](NOTICE) and [`licenses/`](licenses/):
+
+- The TTS inference server and runtime are derived from
+  [Mini-SGLang](https://github.com/sgl-project/mini-sglang) (MIT).
+- `python/zonos2/vendor/nemo_text_processing/` is vendored from
+  [NVIDIA NeMo-text-processing](https://github.com/NVIDIA/NeMo-text-processing)
+  (Apache-2.0).
