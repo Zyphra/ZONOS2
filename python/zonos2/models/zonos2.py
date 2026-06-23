@@ -355,14 +355,36 @@ class FusedGroupedExperts(BaseOP):
         self.top_k = config.get_num_experts_per_tok(layer_id)
 
         local_intermediate = divide_even(self.intermediate_size, tp_info.size)
+        self.quantization = getattr(config, "quantization", "none")
+        self.is_fp8 = self.quantization == "fp8"
 
-        # Fused weights: gate_up_proj = [w1, w3], down_proj = w2
-        self.gate_up_proj = torch.empty(
-            self.num_experts, 2 * local_intermediate, self.hidden_size
-        )
-        self.down_proj = torch.empty(
-            self.num_experts, self.hidden_size, local_intermediate
-        )
+        if self.is_fp8:
+            from zonos2.layers.moe.fused_moe.fp8_utils import FP8_DTYPE, scale_inv_shape
+
+            gate_up_out = 2 * local_intermediate
+            # FP8 (e4m3) experts + float32 per-128-block dequant scales.
+            self.gate_up_proj = torch.empty(
+                self.num_experts, gate_up_out, self.hidden_size, dtype=FP8_DTYPE
+            )
+            self.gate_up_proj_scale_inv = torch.empty(
+                scale_inv_shape(self.num_experts, gate_up_out, self.hidden_size),
+                dtype=torch.float32,
+            )
+            self.down_proj = torch.empty(
+                self.num_experts, self.hidden_size, local_intermediate, dtype=FP8_DTYPE
+            )
+            self.down_proj_scale_inv = torch.empty(
+                scale_inv_shape(self.num_experts, self.hidden_size, local_intermediate),
+                dtype=torch.float32,
+            )
+        else:
+            # Fused weights: gate_up_proj = [w1, w3], down_proj = w2
+            self.gate_up_proj = torch.empty(
+                self.num_experts, 2 * local_intermediate, self.hidden_size
+            )
+            self.down_proj = torch.empty(
+                self.num_experts, self.hidden_size, local_intermediate
+            )
 
         self._fused_moe = FusedMoE(
             num_experts=self.num_experts,
@@ -371,10 +393,14 @@ class FusedGroupedExperts(BaseOP):
             intermediate_size=self.intermediate_size,
             renormalize=config.norm_topk_prob,
             prefix="",
+            quantization=self.quantization,
         )
         # Override weights with ours
         self._fused_moe.gate_up_proj = self.gate_up_proj
         self._fused_moe.down_proj = self.down_proj
+        if self.is_fp8:
+            self._fused_moe.gate_up_proj_scale_inv = self.gate_up_proj_scale_inv
+            self._fused_moe.down_proj_scale_inv = self.down_proj_scale_inv
 
     def load_state_dict(
         self,
@@ -390,6 +416,34 @@ class FusedGroupedExperts(BaseOP):
         If checkpoint has gate_up_proj, load directly.
         """
         from zonos2.layers.base import _concat_prefix
+
+        # FP8 path: weights are pre-fused + block-quantized by models/quantize_fp8.py.
+        # Assign the exact keys directly (BaseOP's substring matching would confuse
+        # ``gate_up_proj`` with ``gate_up_proj_scale_inv``), and skip re-fusion.
+        if self.is_fp8:
+            for name in (
+                "gate_up_proj",
+                "gate_up_proj_scale_inv",
+                "down_proj",
+                "down_proj_scale_inv",
+            ):
+                key = _concat_prefix(prefix, name)
+                if key not in state_dict:
+                    raise KeyError(
+                        f"FP8 expert weight {key!r} missing; convert the checkpoint with "
+                        f"models/quantize_fp8.py before using --quantization fp8."
+                    )
+                item = state_dict.pop(key)
+                target = getattr(self, name)
+                assert item.shape == target.shape, (
+                    f"Shape mismatch for {key}: {item.shape} vs {target.shape}"
+                )
+                setattr(self, name, item)
+            self._fused_moe.gate_up_proj = self.gate_up_proj
+            self._fused_moe.gate_up_proj_scale_inv = self.gate_up_proj_scale_inv
+            self._fused_moe.down_proj = self.down_proj
+            self._fused_moe.down_proj_scale_inv = self.down_proj_scale_inv
+            return
 
         # Keys we expect in fused format
         gate_up_key = _concat_prefix(prefix, "gate_up_proj")

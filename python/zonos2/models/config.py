@@ -63,6 +63,8 @@ class ModelConfig:
     moe_router_dim: int = 256  # Router hidden dimension
     moe_impl: str = "grouped"
     moe_balancing_strategy: str = "legacy"
+    # Quantization: "none" (default, bf16) or "fp8" (blockwise w8a8 experts)
+    quantization: str = "none"
     # TTS-specific fields
     eoa_id: int = 1024  # End-of-audio token ID
     audio_pad_id: int = 1025  # Audio padding token ID

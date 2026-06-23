@@ -73,6 +73,48 @@ class FusedMoEMethod(nn.Module):
         )
 
 
+class Fp8MoEMethod(FusedMoEMethod):
+    """Blockwise w8a8 FP8 expert weights (e4m3 + 128-block dequant scales).
+
+    Allocates ``gate_up_proj``/``down_proj`` as ``float8_e4m3fn`` plus float32
+    ``*_scale_inv`` companions. The actual GEMM runs through
+    ``cutlass_fused_experts_fp8`` (see ``FusedMoE.forward``).
+    """
+
+    def create_weights(
+        self,
+        layer: torch.nn.Module,
+        num_experts: int,
+        hidden_size: int,
+        intermediate_size: int,
+        params_dtype: torch.dtype,
+        tp_size: int = 1,
+        tp_rank: int = 0,
+        **extra_weight_attrs,
+    ):
+        from zonos2.layers.moe.fused_moe.fp8_utils import FP8_DTYPE, scale_inv_shape
+
+        inter = divide_even(intermediate_size, tp_size)
+        gate_up_out = 2 * inter
+
+        layer.gate_up_proj = torch.nn.Parameter(
+            torch.empty(num_experts, gate_up_out, hidden_size, dtype=FP8_DTYPE),
+            requires_grad=False,
+        )
+        layer.gate_up_proj_scale_inv = torch.nn.Parameter(
+            torch.empty(scale_inv_shape(num_experts, gate_up_out, hidden_size), dtype=torch.float32),
+            requires_grad=False,
+        )
+        layer.down_proj = torch.nn.Parameter(
+            torch.empty(num_experts, hidden_size, inter, dtype=FP8_DTYPE),
+            requires_grad=False,
+        )
+        layer.down_proj_scale_inv = torch.nn.Parameter(
+            torch.empty(scale_inv_shape(num_experts, hidden_size, inter), dtype=torch.float32),
+            requires_grad=False,
+        )
+
+
 class FusedMoE(BaseOP):
     def __init__(
         self,
@@ -89,6 +131,7 @@ class FusedMoE(BaseOP):
         apply_router_weight_on_input: bool = False,
         inplace: bool = True,
         no_combine: bool = False,
+        quantization: str = "none",
     ):
         super().__init__()
         if params_dtype is None:
@@ -118,8 +161,15 @@ class FusedMoE(BaseOP):
         self.no_combine = no_combine
         self.layer_id = layer_id
         self.prefix = prefix
+        self.quantization = quantization
+        self.is_fp8 = quantization == "fp8"
+        # Lazily-created per-layer CUTLASS grouped-GEMM buffers (fp8 path only).
+        self._fp8_bufs = None
+        self._fp8_bufs_device = None
 
-        self.fused_moe_method: Optional[FusedMoEMethod] = FusedMoEMethod()
+        self.fused_moe_method: Optional[FusedMoEMethod] = (
+            Fp8MoEMethod() if self.is_fp8 else FusedMoEMethod()
+        )
         self.fused_moe_method.create_weights(
             self,
             num_experts=num_experts,
@@ -160,6 +210,15 @@ class FusedMoE(BaseOP):
             topk_weights = topk_weights.to(dtype=torch.float32)
             if self.renormalize:
                 topk_weights = topk_weights / (topk_weights.sum(dim=-1, keepdim=True) + 1e-8)
+            if self.is_fp8:
+                final_hidden_states = self._forward_fp8(
+                    hidden_states,
+                    topk_weights.contiguous(),
+                    topk_ids.to(dtype=torch.int32).contiguous(),
+                )
+                if self.tp_size > 1:
+                    final_hidden_states = self._comm.all_reduce(final_hidden_states)
+                return final_hidden_states
             final_hidden_states = fused_experts(
                 hidden_states=hidden_states,
                 w1=self.gate_up_proj,
@@ -176,3 +235,39 @@ class FusedMoE(BaseOP):
             final_hidden_states = self._comm.all_reduce(final_hidden_states)
 
         return final_hidden_states
+
+    def _forward_fp8(
+        self,
+        hidden_states: torch.Tensor,
+        topk_weights: torch.Tensor,
+        topk_ids: torch.Tensor,
+    ) -> torch.Tensor:
+        """Blockwise FP8 expert FFN via the CUTLASS grouped GEMM."""
+        from zonos2.layers.moe.fused_moe.cutlass_fp8 import (
+            cutlass_fused_experts_fp8,
+            make_cutlass_fp8_buffers,
+        )
+
+        if self._fp8_bufs is None or self._fp8_bufs_device != hidden_states.device:
+            self._fp8_bufs = make_cutlass_fp8_buffers(
+                num_experts=self.num_experts,
+                hidden_size=self.hidden_size,
+                gate_up_out=2 * self.intermediate_size_per_partition,
+                intermediate_size=self.intermediate_size_per_partition,
+                device=hidden_states.device,
+            )
+            self._fp8_bufs_device = hidden_states.device
+
+        # Weights are stored [out, in]; the grouped GEMM wants [E, in, out]
+        # (column-major), hence the transpose. Their block scales, however, are
+        # passed in the stored [E, out/128, in/128] layout (NOT transposed).
+        return cutlass_fused_experts_fp8(
+            a=hidden_states,
+            w1_q=self.gate_up_proj.transpose(1, 2),
+            w2_q=self.down_proj.transpose(1, 2),
+            w1_scale=self.gate_up_proj_scale_inv,
+            w2_scale=self.down_proj_scale_inv,
+            topk_weights=topk_weights,
+            topk_ids=topk_ids,
+            bufs=self._fp8_bufs,
+        )

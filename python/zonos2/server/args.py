@@ -107,6 +107,15 @@ def parse_args(args: List[str], run_shell: bool = False) -> Tuple[ServerArgs, bo
     )
 
     parser.add_argument(
+        "--quantization",
+        type=str,
+        default=ServerArgs.quantization,
+        choices=["none", "fp8"],
+        help="Expert quantization. 'none' keeps bf16 experts; 'fp8' runs blockwise w8a8 (e4m3) MoE experts "
+        "from an FP8-converted checkpoint (see models/quantize_fp8.py). The non-expert spine stays in --dtype.",
+    )
+
+    parser.add_argument(
         "--tensor-parallel-size",
         "--tp-size",
         type=int,

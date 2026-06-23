@@ -17,6 +17,7 @@ class EngineConfig:
     model_path: str
     tp_info: DistributedInfo
     dtype: torch.dtype
+    quantization: str = "none"
     max_running_req: int = 256
     attention_backend: str = "auto"
     moe_backend: str = "fused_moe"
@@ -36,9 +37,13 @@ class EngineConfig:
 
     @cached_property
     def model_config(self) -> ModelConfig:
+        import dataclasses
+
         from zonos2.models import ModelConfig
 
-        return ModelConfig.from_checkpoint_config(self.checkpoint_config)
+        base = ModelConfig.from_checkpoint_config(self.checkpoint_config)
+        # Inject the runtime quantization flag (not part of the checkpoint config).
+        return dataclasses.replace(base, quantization=self.quantization)
 
     @property
     def max_seq_len(self) -> int:

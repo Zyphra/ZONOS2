@@ -43,3 +43,6 @@ default_voices/*
 !default_voices/AmericanFemale.mp3
 !default_voices/AmericanMale.mp3
 !default_voices/BritishFemale.mp3
+
+# FP8-converted checkpoint (large; produced by models/quantize_fp8.py)
+models/zonos2-fp8/

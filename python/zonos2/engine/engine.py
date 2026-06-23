@@ -224,8 +224,15 @@ class Engine:
                 for k, v in self.model.state_dict().items()
             }
         else:
+            def _cast(k: str, v: torch.Tensor) -> torch.Tensor:
+                # Keep FP8 expert weights (e4m3) and their float32 block scales as-is;
+                # only the bf16/fp16 spine is cast to the runtime dtype.
+                if v.dtype == torch.float8_e4m3fn or k.endswith("_scale_inv"):
+                    return v
+                return v.to(self.dtype)
+
             return {
-                k: v.to(self.dtype)
+                k: _cast(k, v)
                 for k, v in load_checkpoint_weight(config.model_path, self.device).items()
             }
 

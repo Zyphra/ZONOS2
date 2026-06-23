@@ -58,6 +58,19 @@ speakers from disk; the folder is scanned recursively for speaker audio
 embeddings (`.npy`, `.npz`). The newest voice is selected automatically on
 startup.
 
+#### Optional: FP8 experts (Hopper)
+
+On Hopper GPUs you can run the MoE experts in blockwise **w8a8 FP8** (e4m3) while the
+rest of the model (router, embeddings, attention, dense FFN, norms) stays in bf16. This
+roughly halves the expert weights. It's opt-in — the default bf16 path is unchanged.
+
+First convert a checkpoint, then launch with `--quantization fp8`:
+
+```bash
+uv run python models/quantize_fp8.py --in Zyphra/ZONOS2 --out ./models/zonos2-fp8
+uv run python -m zonos2 --model-path ./models/zonos2-fp8 --quantization fp8 --tts-default-voices-dir ./default_voices/
+```
+
 ### 3. Generate Speech
 
 **curl:**
