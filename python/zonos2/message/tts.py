@@ -22,6 +22,11 @@ class TTSSamplingParams:
     repetition_penalty: float = 1.2
     repetition_codebooks: int = 8
     seed: int | None = None
+    # Emotion classifier-free guidance scale. 1.0 disables guidance. Otherwise
+    # the scheduler runs a paired unconditional twin (same prompt + speaker but
+    # no emotion delta) and combines logits: guided = uncond + scale*(cond-uncond),
+    # amplifying the injected emotion in output space.
+    emotion_cfg_scale: float = 1.0
 
 
 @dataclass
@@ -59,6 +64,10 @@ class TTSTokenizeMsg(BaseTTSTokenizerMsg):
     speaker_embedding: torch.Tensor | None = None
     # Token position in the prompt sequence where speaker embedding is injected.
     speaker_token_position: int = -1
+    # Optional emotion delta added to the *projected* speaker hidden vector
+    # (post speaker_projection), shape: (hidden_size,). Used by space="proj"
+    # emotion directions to inject in the model's hidden space.
+    speaker_emotion_delta: torch.Tensor | None = None
     # Whether the speaker embedding should be marked as having a clean background.
     clean_speaker_background: bool = False
     # Whether to condition generation on the accurate-mode marker token
@@ -118,6 +127,9 @@ class TTSUserMsg(BaseTTSBackendMsg):
     speaker_embedding: torch.Tensor | None = None
     # Token position in the prompt sequence where speaker embedding is injected.
     speaker_token_position: int = -1
+    # Optional emotion delta added to the projected speaker hidden vector
+    # (post speaker_projection), shape: (hidden_size,).
+    speaker_emotion_delta: torch.Tensor | None = None
     # Whether the speaker embedding should be marked as having a clean background.
     clean_speaker_background: bool = False
     # Whether to condition generation on the accurate-mode marker token.

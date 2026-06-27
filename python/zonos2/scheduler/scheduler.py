@@ -269,6 +269,11 @@ class TTSScheduler(SchedulerIOMixin):
             # Append to host storage
             req.append_host(next_token)
 
+            # Unconditional CFG twins are internal: no output, no EOS handling.
+            # Their lifecycle is tied to the conditional req below.
+            if req.is_cfg_uncond:
+                continue
+
             # Log progress
             generated = req.total_generated
             if generated <= 5:
@@ -302,6 +307,10 @@ class TTSScheduler(SchedulerIOMixin):
             if finished:
                 self.finished_reqs.add(req)
                 self.decode_manager.remove_req(req)
+                # Finish the unconditional twin alongside its conditional req.
+                if req.cfg_twin is not None:
+                    self.finished_reqs.add(req.cfg_twin)
+                    self.decode_manager.remove_req(req.cfg_twin)
                 logger.debug("TTS %d finished: %d frames generated", req.uid, generated)
 
         # Free resources for finished but not ongoing reqs
@@ -449,6 +458,18 @@ class TTSScheduler(SchedulerIOMixin):
                 input_ids = self._with_speaker_frames(input_ids, msg, speaker_token_position)
                 speaker_token_position = 0
 
+            # Emotion CFG: a guided request runs a paired unconditional twin (same
+            # prompt + speaker, but no emotion delta) that decodes in lockstep, so
+            # it consumes a second table slot / cache handle.
+            emotion_cfg = (
+                msg.speaker_emotion_delta is not None
+                and msg.speaker_embedding is not None
+                and float(msg.sampling_params.emotion_cfg_scale) != 1.0
+            )
+            needed_slots = 2 if emotion_cfg else 1
+            if self.table_manager.available_size < needed_slots:
+                break  # don't start a CFG pair unless both slots are free
+
             input_len = len(input_ids)
             max_seq_len = self.engine.max_seq_len
             if input_len >= max_seq_len:
@@ -469,11 +490,12 @@ class TTSScheduler(SchedulerIOMixin):
                     msg.uid,
                 )
 
-            if total_tokens + input_len > self.prefill_budget and reqs:
+            pair_len = input_len * needed_slots
+            if total_tokens + pair_len > self.prefill_budget and reqs:
                 break  # Don't exceed budget unless this is the first request
 
             self.waiting_reqs.pop(0)
-            total_tokens += input_len
+            total_tokens += pair_len
 
             # Create TTSReq
             table_idx = self.table_manager.allocate()
@@ -515,8 +537,39 @@ class TTSScheduler(SchedulerIOMixin):
                 rng=rng,
                 speaker_embedding=msg.speaker_embedding,
                 speaker_token_position=speaker_token_position,
+                speaker_emotion_delta=msg.speaker_emotion_delta,
+                cfg_scale=float(msg.sampling_params.emotion_cfg_scale) if emotion_cfg else 1.0,
             )
             reqs.append(req)
+
+            if emotion_cfg:
+                # Unconditional twin: identical prompt + speaker, but no emotion
+                # delta. Its sampled tokens are overwritten with the conditional
+                # req's each step (_sync_cfg_twin_tokens), so it has no RNG and
+                # emits no output.
+                twin_table_idx = self.table_manager.allocate()
+                twin_cache_handle = self.cache_manager.allocate_new_handle()
+                self.token_pool[twin_table_idx, :input_len].copy_(
+                    input_ids_i32.pin_memory().to(self.device), non_blocking=True
+                )
+                twin = TTSReq(
+                    input_ids=input_ids_i32,
+                    table_idx=twin_table_idx,
+                    cached_len=0,
+                    output_len=sampling_params.max_tokens,
+                    uid=msg.uid,
+                    sampling_params=sampling_params,
+                    cache_handle=twin_cache_handle,
+                    n_codebooks=self.n_codebooks,
+                    eoa_id=self.eoa_id,
+                    rng=None,
+                    speaker_embedding=msg.speaker_embedding,
+                    speaker_token_position=speaker_token_position,
+                    speaker_emotion_delta=None,
+                    is_cfg_uncond=True,
+                )
+                req.cfg_twin = twin
+                reqs.append(twin)
 
         if not reqs:
             return None
@@ -622,15 +675,53 @@ class TTSScheduler(SchedulerIOMixin):
                     frame_indices[0].item(),
                 )
 
+    def _cfg_pairs(self, batch: TTSBatch) -> list[tuple[int, int, float]]:
+        """Return (cond_row, uncond_row, cfg_scale) for guided pairs in the batch.
+
+        Rows index into the forward logits / sampled tokens (ordered to match
+        ``batch.reqs``).
+        """
+        row = {id(req): i for i, req in enumerate(batch.reqs)}
+        pairs: list[tuple[int, int, float]] = []
+        for req in batch.reqs:
+            twin = req.cfg_twin
+            if twin is None or req.cfg_scale == 1.0:
+                continue
+            j = row.get(id(twin))
+            if j is not None:
+                pairs.append((row[id(req)], j, float(req.cfg_scale)))
+        return pairs
+
+    def _apply_cfg(self, logits: torch.Tensor, batch: TTSBatch) -> torch.Tensor:
+        """Combine cond/uncond logit rows: guided = uncond + scale*(cond-uncond)."""
+        pairs = self._cfg_pairs(batch)
+        if not pairs:
+            return logits
+        guided = logits.float()
+        for i, j, scale in pairs:
+            cond, uncond = guided[i], guided[j]
+            guided[i] = uncond + scale * (cond - uncond)
+        return guided.to(logits.dtype)
+
+    def _sync_cfg_twin_tokens(self, next_tokens: torch.Tensor, batch: TTSBatch) -> None:
+        """Copy each conditional req's sampled frame onto its uncond twin so both
+        KV histories stay identical (lockstep); the twin's own frame is discarded."""
+        for i, j, _ in self._cfg_pairs(batch):
+            next_tokens[j] = next_tokens[i]
+
     def _prepare_speaker_conditioning(self, batch: TTSBatch) -> None:
         """Prepare per-batch speaker embeddings and injection positions."""
         if not self.speaker_enabled:
             batch.speaker_emb_values = None
             batch.speaker_token_positions = None
+            batch.speaker_emotion_delta_values = None
             return
 
         emb_values: list[torch.Tensor] = []
         token_positions: list[int] = []
+        # Emotion deltas (post-projection hidden space), aligned 1:1 with emb_values.
+        emotion_deltas: list[torch.Tensor | None] = []
+        any_emotion = False
         offset = 0
 
         for req in batch.reqs:
@@ -651,6 +742,9 @@ class TTSScheduler(SchedulerIOMixin):
                 else:
                     emb_values.append(emb.to(torch.float32))
                     token_positions.append(offset + rel_pos)
+                    delta = req.speaker_emotion_delta
+                    emotion_deltas.append(None if delta is None else delta.to(torch.float32))
+                    any_emotion = any_emotion or delta is not None
             offset += req.extend_len
 
         if emb_values:
@@ -660,9 +754,21 @@ class TTSScheduler(SchedulerIOMixin):
             batch.speaker_token_positions = torch.tensor(
                 token_positions, dtype=torch.long, device=self.device
             )
+            if any_emotion:
+                hidden = next(d.numel() for d in emotion_deltas if d is not None)
+                deltas = [
+                    d if d is not None else torch.zeros(hidden, dtype=torch.float32)
+                    for d in emotion_deltas
+                ]
+                batch.speaker_emotion_delta_values = torch.stack(deltas, dim=0).to(
+                    self.device, non_blocking=True
+                )
+            else:
+                batch.speaker_emotion_delta_values = None
         else:
             batch.speaker_emb_values = None
             batch.speaker_token_positions = None
+            batch.speaker_emotion_delta_values = None
 
     def _forward(self, forward_input: TTSForwardInput) -> TTSForwardOutput:
         """Run forward pass on batch."""
@@ -705,6 +811,9 @@ class TTSScheduler(SchedulerIOMixin):
         # Forward through engine - get multi-codebook logits
         logits = self.engine.forward_batch_tts(batch)
 
+        # Emotion classifier-free guidance: combine cond/uncond rows.
+        logits = self._apply_cfg(logits, batch)
+
         # Debug: check logits stats for first 5 frames
         if logger.isEnabledFor(logging.DEBUG) and batch.size > 0:
             req = batch.reqs[0]
@@ -720,6 +829,9 @@ class TTSScheduler(SchedulerIOMixin):
 
         # Sample tokens
         next_tokens = self.tts_sampler.sample_to_tensor(logits, sample_args)
+
+        # Mirror the conditional token onto its uncond twin so both stay in step.
+        self._sync_cfg_twin_tokens(next_tokens, batch)
 
         # Copy to CPU
         next_tokens_cpu = torch.empty_like(next_tokens, device="cpu", pin_memory=True)

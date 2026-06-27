@@ -1,0 +1,38 @@
+{
+  "dim": 2048,
+  "ref_base_norm": 0.15741927921772003,
+  "neutral": "neutral",
+  "space": "proj",
+  "directions": {
+    "happy": {
+      "file": "happy.npy",
+      "kind": "named",
+      "norm": 0.055785685777664185
+    },
+    "sad": {
+      "file": "sad.npy",
+      "kind": "named",
+      "norm": 0.06770756095647812
+    },
+    "angry": {
+      "file": "angry.npy",
+      "kind": "named",
+      "norm": 0.06142314523458481
+    },
+    "surprised": {
+      "file": "surprised.npy",
+      "kind": "named",
+      "norm": 0.046131547540426254
+    },
+    "valence": {
+      "file": "valence.npy",
+      "kind": "axis",
+      "norm": 0.02522108145058155
+    },
+    "arousal": {
+      "file": "arousal.npy",
+      "kind": "axis",
+      "norm": 0.025390969589352608
+    }
+  }
+}

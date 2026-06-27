@@ -89,6 +89,16 @@ class TTSReq:
     rng: torch.Generator | None = None  # Per-request RNG for deterministic sampling
     speaker_embedding: torch.Tensor | None = None  # 1D CPU float32 tensor
     speaker_token_position: int = -1  # Injection position within the prompt sequence
+    # Optional emotion delta added to the projected speaker hidden vector
+    # (post speaker_projection); 1D CPU float32 tensor of shape (hidden_size,).
+    speaker_emotion_delta: torch.Tensor | None = None
+    # Emotion classifier-free guidance. On the conditional request,
+    # cfg_scale > 1.0 and cfg_twin points at its paired unconditional request
+    # (same prompt + speaker but speaker_emotion_delta=None). is_cfg_uncond marks
+    # the twin (internal, emits no output). guided = uncond + cfg_scale*(cond-uncond).
+    cfg_scale: float = 1.0
+    is_cfg_uncond: bool = False
+    cfg_twin: "TTSReq | None" = None
 
     def __post_init__(self) -> None:
         assert self.input_ids.is_cpu
@@ -106,6 +116,16 @@ class TTSReq:
                     f"speaker_embedding must be 1D or (1, D), got shape {tuple(emb.shape)}"
                 )
             self.speaker_embedding = emb.to(dtype=torch.float32, device="cpu")
+
+        if self.speaker_emotion_delta is not None:
+            d = self.speaker_emotion_delta
+            if d.dim() == 2 and d.shape[0] == 1:
+                d = d.squeeze(0)
+            if d.dim() != 1:
+                raise ValueError(
+                    f"speaker_emotion_delta must be 1D or (1, D), got shape {tuple(d.shape)}"
+                )
+            self.speaker_emotion_delta = d.to(dtype=torch.float32, device="cpu")
 
         if self.speaker_token_position < 0:
             # Training convention: reserved speaker slot is at prompt position 0.
@@ -200,6 +220,9 @@ class TTSBatch:
     # Optional per-batch speaker conditioning data (set by TTS scheduler).
     speaker_emb_values: torch.Tensor | None = field(default=None, init=False)
     speaker_token_positions: torch.Tensor | None = field(default=None, init=False)
+    # Optional post-projection hidden-space emotion deltas, aligned with
+    # speaker_emb_values / speaker_token_positions.
+    speaker_emotion_delta_values: torch.Tensor | None = field(default=None, init=False)
 
     @property
     def is_prefill(self) -> bool:

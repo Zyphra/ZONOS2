@@ -1,0 +1,42 @@
+{
+  "objective": "emotion2vec_target_prob",
+  "grid": [
+    1.0,
+    2.0,
+    3.0,
+    4.0
+  ],
+  "min_prob": 0.12,
+  "global_default": 3.0,
+  "default": {
+    "happy": 3.0,
+    "sad": 3.0,
+    "angry": 3.0,
+    "surprised": 4.0
+  },
+  "by_speaker": {
+    "default_853b30a7338f306e": {
+      "happy": 4.0,
+      "sad": 3.0,
+      "angry": 3.0,
+      "surprised": 4.0
+    },
+    "default_7fe076568a17f68e": {
+      "happy": 3.0,
+      "sad": 2.0,
+      "angry": 3.0,
+      "surprised": 4.0
+    },
+    "default_43a38d87b562b77a": {
+      "happy": 3.0,
+      "sad": 3.0,
+      "angry": 4.0,
+      "surprised": 4.0
+    }
+  },
+  "labels": {
+    "default_853b30a7338f306e": "AmericanFemale",
+    "default_7fe076568a17f68e": "AmericanMale",
+    "default_43a38d87b562b77a": "BritishFemale"
+  }
+}

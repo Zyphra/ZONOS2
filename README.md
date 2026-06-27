@@ -128,6 +128,12 @@ Full-featured TTS endpoint with streaming support.
 | `quality_values` | object \| list \| null | `null` | Raw quality metric values, mapped to buckets server-side (alternative to `quality_buckets`) |
 | `clean_speaker_background` | bool | `false` | Mark the reference voice as having a clean background (supported models) |
 | `accurate_mode` | bool | `true` | `true` = accurate mode (closer voice match), `false` = expressive mode |
+| `emotion_enabled` | bool | `false` | Enable emotion-control conditioning (requires loaded emotion directions) |
+| `emotion_sliders` | object \| null | `null` | Per-emotion weights, e.g. `{"happy": 1.0, "sad": 0.5}` (available names from `/tts/capabilities`) |
+| `emotion_valence` | float | `0.0` | Valence axis (−1 negative … +1 positive) |
+| `emotion_arousal` | float | `0.0` | Arousal axis (−1 calm … +1 excited) |
+| `emotion_strength` | float | `1.0` | Multiplier on the calibrated strength; `1.0` = calibrated, higher exaggerates |
+| `emotion_cfg_scale` | float | `1.0` | Emotion guidance; `1.0` = off, ~1.5 strongly amplifies emotion (best with expressive mode), ~2× compute |
 | `stream` | bool | `true` | Stream audio chunks |
 
 **Response:** Raw PCM audio (`audio/pcm`, float32, 44.1 kHz, mono). Headers include `X-Audio-Sample-Rate`, `X-Audio-Channels`, `X-Audio-Format`.
@@ -151,7 +157,45 @@ For speaking-rate-enabled checkpoints, set `speaking_rate_enabled` to `true`
 and use `speaking_rate_bucket` for exact bucket control, `speaking_rate` for
 bytes-per-second control, or `speed` for OpenAI-style multiplier control.
 
+## Emotion Control
 
+You can nudge a voice toward an emotion (happy, sad, angry, surprised) or along
+the valence/arousal axes **without changing speaker identity**. Emotion is
+applied as additive *direction* vectors on the speaker conditioning — no model
+or checkpoint changes — so the timbre is preserved while prosody shifts.
+
+Direction vectors ship in `./emotion_directions/`, and the server **auto-loads
+them on startup when that folder is present** — emotion sliders appear in the
+web UI automatically, no extra flags. Point elsewhere (or disable) with
+`--tts-emotion-directions-dir <dir>` (pass an empty string to turn it off).
+
+```bash
+curl -X POST http://localhost:1919/tts/generate \
+  -H "Content-Type: application/json" \
+  -d '{
+        "text": "I cannot believe you did that!",
+        "emotion_enabled": true,
+        "emotion_sliders": {"happy": 1.0},
+        "accurate_mode": false,
+        "emotion_cfg_scale": 1.5,
+        "stream": true
+      }' \
+  --output happy.pcm
+```
+
+`GET /tts/capabilities` reports what the loaded directions expose:
+`emotion_enabled`, `emotion_names`, `emotion_axes`, and `emotion_calibrated`
+(whether a per-speaker strength calibration is loaded). The shipped directions
+include a `calibration.json` so `emotion_strength: 1.0` is already a sensible
+per-emotion default; raise it to exaggerate. For strong, reliable effects use
+**expressive mode** (`accurate_mode: false`) together with
+`emotion_cfg_scale` around `1.5`.
+
+**Building your own directions.** Use `scripts/build_emotion_directions.py` to
+encode an emotion-labelled corpus (e.g. ESD) into a new `emotion_directions/`
+set, and `scripts/calibrate_emotion_strength.py` to auto-tune per-speaker,
+per-emotion strength against the emotion2vec recognizer. See each script's
+`--help`.
 
 ## Citation
 If you find this model useful in an academic context please cite as:

@@ -23,6 +23,10 @@ Text is encoded directly as UTF-8 byte IDs. The prompt builder also supports spe
 
 Speaker-conditioned checkpoints can use saved `.npy`/`.npz` embeddings or uploaded audio. Audio uploads are converted to 2048D embeddings with the retained Qwen3 voice embedding model.
 
+## Emotion Control
+
+Additive emotion-direction vectors nudge a voice toward an emotion (happy/sad/angry/surprised) or along valence/arousal axes while preserving speaker identity. Directions load from `--tts-emotion-directions-dir` (defaults to `./emotion_directions/`, auto-enabling sliders when present); per-request via `emotion_enabled` + `emotion_sliders`/`emotion_valence`/`emotion_arousal`, with `emotion_strength` and `emotion_cfg_scale` controlling intensity. Build sets with `scripts/build_emotion_directions.py` and calibrate strength with `scripts/calibrate_emotion_strength.py`.
+
 ## Distributed Serving
 
 Tensor parallelism is available with `--tp-size n`. Rank 0 handles API-facing scheduler messages and broadcasts work to the remaining ranks.

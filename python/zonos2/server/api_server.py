@@ -33,6 +33,12 @@ from zonos2.message import (
     TTSSamplingParams,
     TTSTokenizeMsg,
 )
+from zonos2.tts.emotion import (
+    EmotionCalibration,
+    EmotionDirections,
+    apply_emotion,
+    emotion_hidden_delta,
+)
 from zonos2.utils import ZmqAsyncPullQueue, ZmqAsyncPushQueue, init_logger
 
 from .args import ServerArgs
@@ -49,6 +55,11 @@ _SESSION_SPEAKER_CACHE: Dict[str, Dict[str, "CachedSpeakerReference"]] = {}
 _SESSION_SPEAKER_CACHE_LOCK = asyncio.Lock()
 _DEFAULT_SPEAKER_CACHE: Dict[Tuple[str, int], Dict[str, "DefaultSpeakerReference"]] = {}
 _DEFAULT_SPEAKER_CACHE_LOCK = asyncio.Lock()
+# Loaded emotion directions, keyed by directory. Value is None when no directions
+# are available so we only attempt to load each directory once.
+_EMOTION_DIRECTIONS_CACHE: Dict[str, "EmotionDirections | None"] = {}
+# Loaded per-speaker emotion strength calibration, keyed by directory.
+_EMOTION_CALIBRATION_CACHE: Dict[str, "EmotionCalibration | None"] = {}
 _SPEAKING_RATE_FPS = 86.0 * (44070.0 / 44000.0)
 _DEFAULT_SPEAKING_RATE_BYTES_PER_SECOND = 15.0
 _SPEAKING_RATE_CLOSED_BUCKET_RE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*-\s*(\d+(?:\.\d+)?)\s*$")
@@ -601,6 +612,113 @@ def _slerp_embeddings(v0: torch.Tensor, v1: torch.Tensor, t: float) -> torch.Ten
         + (torch.sin(blend * omega) / sin_omega) * v1
     )
     return mixed.to(dtype=torch.float32, device="cpu").contiguous()
+
+
+def _emotion_directions_root(config: ServerArgs) -> Path | None:
+    raw = getattr(config, "tts_emotion_directions_dir", None)
+    if not raw:
+        return None
+    return Path(str(raw)).expanduser()
+
+
+def _get_emotion_directions(config: ServerArgs) -> "EmotionDirections | None":
+    """Load (and cache) the emotion directions for the configured directory."""
+    root = _emotion_directions_root(config)
+    if root is None:
+        return None
+    key = str(root)
+    if key not in _EMOTION_DIRECTIONS_CACHE:
+        try:
+            directions = EmotionDirections.load(root)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to load emotion directions from %s: %s", root, exc)
+            directions = None
+        if directions is None:
+            logger.info("No emotion directions found at %s; emotion control disabled.", root)
+        else:
+            logger.info(
+                "Loaded emotion directions from %s (emotions=%s, axes=%s).",
+                root, directions.emotion_names, directions.axis_names,
+            )
+        _EMOTION_DIRECTIONS_CACHE[key] = directions
+    return _EMOTION_DIRECTIONS_CACHE[key]
+
+
+def _get_emotion_calibration(config: ServerArgs) -> "EmotionCalibration | None":
+    """Load (and cache) the per-speaker strength calibration, if present."""
+    root = _emotion_directions_root(config)
+    if root is None:
+        return None
+    key = str(root)
+    if key not in _EMOTION_CALIBRATION_CACHE:
+        try:
+            cal = EmotionCalibration.load(root)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to load emotion calibration from %s: %s", root, exc)
+            cal = None
+        if cal is not None:
+            logger.info("Loaded emotion strength calibration for %d speakers from %s.",
+                        len(cal.by_speaker), root)
+        _EMOTION_CALIBRATION_CACHE[key] = cal
+    return _EMOTION_CALIBRATION_CACHE[key]
+
+
+def _apply_request_emotion(
+    config: ServerArgs,
+    speaker_embedding: torch.Tensor | None,
+    *,
+    speaker_id: str | None = None,
+    emotion_enabled: bool,
+    sliders: Dict[str, float] | None,
+    valence: float,
+    arousal: float,
+    strength: float,
+) -> tuple[torch.Tensor | None, torch.Tensor | None]:
+    """Resolve emotion control into a (speaker_embedding, hidden_delta) pair.
+
+    For ``raw``/``lda`` directions the embedding itself is nudged and the hidden
+    delta is ``None``. For ``proj`` directions the embedding is left unchanged
+    and the returned hidden delta is added to the projected speaker vector
+    inside the model. No-op when emotion is disabled / nothing requested.
+    Raises ValueError on bad input (mapped to HTTP 400).
+    """
+    if speaker_embedding is None or not emotion_enabled:
+        return speaker_embedding, None
+    has_request = bool(sliders) or float(valence) != 0.0 or float(arousal) != 0.0
+    if not has_request:
+        return speaker_embedding, None
+    directions = _get_emotion_directions(config)
+    if directions is None or directions.is_empty():
+        raise ValueError(
+            "Emotion control requested but no emotion directions are configured. "
+            "Build them with scripts/build_emotion_directions.py and start the server "
+            "with --tts-emotion-directions-dir."
+        )
+    # Fold the per-speaker, per-emotion calibrated strength into the weights so a
+    # single global `strength` (user multiplier, default 1.0) drives all emotions
+    # at their voice-specific optimum.
+    cal = _get_emotion_calibration(config)
+    if cal is not None:
+        sliders = {e: float(w) * cal.strength(speaker_id, e) for e, w in (sliders or {}).items()}
+        valence = float(valence) * cal.strength(speaker_id, "valence")
+        arousal = float(arousal) * cal.strength(speaker_id, "arousal")
+
+    if directions.space == "proj":
+        delta = emotion_hidden_delta(
+            directions, sliders=sliders, valence=valence, arousal=arousal,
+            strength=strength, strict=True,
+        )
+        return speaker_embedding, delta
+    emb = apply_emotion(
+        speaker_embedding,
+        directions=directions,
+        sliders=sliders,
+        valence=valence,
+        arousal=arousal,
+        strength=strength,
+        strict=True,
+    )
+    return emb, None
 
 
 def _serialize_cached_speaker(entry: CachedSpeakerReference) -> dict:
@@ -1210,6 +1328,16 @@ class TTSGenerateRequest(BaseModel):
     speaker_blend_embedding_id_b: str | None = None
     speaker_blend_t: float | None = None
     speaker_wav_base64: str | None = None
+    # Emotion control: nudges the speaker embedding along precomputed emotion
+    # directions. emotion_sliders maps emotion name -> weight (typically -1..1).
+    emotion_enabled: bool = False
+    emotion_sliders: Dict[str, float] | None = None
+    emotion_valence: float = 0.0
+    emotion_arousal: float = 0.0
+    emotion_strength: float = 1.0
+    # Classifier-free guidance on the emotion injection. 1.0 = off. >1 amplifies
+    # the emotion in output space via a paired unconditional (no-emotion) twin.
+    emotion_cfg_scale: float = 1.0
 
 
 class OpenAISpeechRequest(BaseModel):
@@ -1235,6 +1363,14 @@ class OpenAISpeechRequest(BaseModel):
     speaker_blend_embedding_id_b: str | None = None
     speaker_blend_t: float | None = None
     speaker_wav_base64: str | None = None
+    emotion_enabled: bool = False
+    emotion_sliders: Dict[str, float] | None = None
+    emotion_valence: float = 0.0
+    emotion_arousal: float = 0.0
+    emotion_strength: float = 1.0
+    # Classifier-free guidance on the emotion injection. 1.0 = off. >1 amplifies
+    # the emotion in output space via a paired unconditional (no-emotion) twin.
+    emotion_cfg_scale: float = 1.0
 
 
 class TTSSpeakerCacheRequest(BaseModel):
@@ -1452,6 +1588,16 @@ async def create_speech(
             speaker_blend_t=req.speaker_blend_t,
             legacy_speaker_wav_base64=req.speaker_wav_base64,
         )
+        speaker_embedding, speaker_emotion_delta = _apply_request_emotion(
+            state.config,
+            speaker_embedding,
+            speaker_id=req.speaker_embedding_id,
+            emotion_enabled=req.emotion_enabled,
+            sliders=req.emotion_sliders,
+            valence=req.emotion_valence,
+            arousal=req.emotion_arousal,
+            strength=req.emotion_strength,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RuntimeError as exc:
@@ -1478,8 +1624,10 @@ async def create_speech(
                 repetition_window=req.repetition_window,
                 repetition_penalty=req.repetition_penalty,
                 repetition_codebooks=req.repetition_codebooks,
+                emotion_cfg_scale=req.emotion_cfg_scale,
             ),
             speaker_embedding=speaker_embedding,
+            speaker_emotion_delta=speaker_emotion_delta,
             speaking_rate_bucket=speaking_rate_bucket,
             quality_buckets=_default_quality_buckets(state.config),
         )
@@ -1522,6 +1670,16 @@ async def tts_generate(
             speaker_blend_t=req.speaker_blend_t,
             legacy_speaker_wav_base64=req.speaker_wav_base64,
         )
+        speaker_embedding, speaker_emotion_delta = _apply_request_emotion(
+            state.config,
+            speaker_embedding,
+            speaker_id=req.speaker_embedding_id,
+            emotion_enabled=req.emotion_enabled,
+            sliders=req.emotion_sliders,
+            valence=req.emotion_valence,
+            arousal=req.emotion_arousal,
+            strength=req.emotion_strength,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RuntimeError as exc:
@@ -1562,8 +1720,10 @@ async def tts_generate(
                 repetition_penalty=req.repetition_penalty,
                 repetition_codebooks=req.repetition_codebooks,
                 seed=req.seed,
+                emotion_cfg_scale=req.emotion_cfg_scale,
             ),
             speaker_embedding=speaker_embedding,
+            speaker_emotion_delta=speaker_emotion_delta,
             clean_speaker_background=req.clean_speaker_background,
             accurate_mode=req.accurate_mode,
             speaking_rate_bucket=speaking_rate_bucket,
@@ -1749,6 +1909,20 @@ async def tts_capabilities():
         "speaker_embedding_cache": True,
         "speaker_embedding_blend": True,
         "default_voices_enabled": bool(_default_voice_root(state.config)),
+        **_emotion_capabilities(state.config),
+    }
+
+
+def _emotion_capabilities(config: ServerArgs) -> dict:
+    """Report which emotion sliders/axes the loaded model exposes."""
+    directions = _get_emotion_directions(config) if _model_supports_speaker(config) else None
+    if directions is None or directions.is_empty():
+        return {"emotion_enabled": False, "emotion_names": [], "emotion_axes": [], "emotion_calibrated": False}
+    return {
+        "emotion_enabled": True,
+        "emotion_names": directions.emotion_names,
+        "emotion_axes": directions.axis_names,
+        "emotion_calibrated": _get_emotion_calibration(config) is not None,
     }
 
 

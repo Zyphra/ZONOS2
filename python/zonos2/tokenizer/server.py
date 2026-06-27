@@ -143,6 +143,7 @@ def tokenize_worker(
                             sampling_params=msg.sampling_params,
                             speaker_embedding=msg.speaker_embedding,
                             speaker_token_position=speaker_token_position,
+                            speaker_emotion_delta=msg.speaker_emotion_delta,
                             clean_speaker_background=msg.clean_speaker_background,
                             accurate_mode=msg.accurate_mode,
                         )

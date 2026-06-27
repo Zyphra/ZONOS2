@@ -964,6 +964,24 @@
         <div class="param-hint" id="qualityHint">Quality conditioning is disabled.</div>
       </div>
       <div class="param-group">
+        <label class="param-label">Emotion</label>
+        <label class="param-check" id="emotionEnabledWrap">
+          <input type="checkbox" id="emotionEnabled">
+          <span>Apply emotion sliders to the speaker voice</span>
+        </label>
+        <div class="quality-feature-list" id="emotionSliderList"></div>
+        <div class="param-group" id="emotionStrengthWrap" style="display:none;">
+          <label class="param-label">Emotion Strength <span class="param-value" id="emotionStrengthVal">3.00</span></label>
+          <input type="range" class="param-slider" id="emotionStrength" min="0" max="12" step="0.1" value="3">
+        </div>
+        <div class="param-group" id="emotionCfgWrap" style="display:none;">
+          <label class="param-label">Emotion Guidance (CFG) <span class="param-value" id="emotionCfgVal">1.5</span></label>
+          <input type="range" class="param-slider" id="emotionCfg" min="1" max="3" step="0.05" value="1.5">
+          <div class="param-hint" id="emotionCfgHint">1.0 = off. ~1.5–2 strongly amplifies emotion (best with Expressive mode); costs ~2× compute.</div>
+        </div>
+        <div class="param-hint" id="emotionHint">Emotion control is disabled.</div>
+      </div>
+      <div class="param-group">
         <label class="param-label">Repetition Window <span class="param-value" id="repWindowVal">50</span></label>
         <input type="range" class="param-slider" id="repwindow" min="0" max="512" step="1" value="50">
       </div>
@@ -1083,6 +1101,10 @@
         accurate_mode_token_enabled: false,
         text_normalization_enabled: true,
         text_norm_languages: [],
+        emotion_enabled: false,
+        emotion_names: [],
+        emotion_axes: [],
+        emotion_calibrated: false,
       },
       speakerLibrary: [],
       speakerPreviewUrls: new Map(),
@@ -1116,6 +1138,16 @@
     const qualityFeatureList = $('qualityFeatureList');
     const qualityBucketVal = $('qualityBucketVal');
     const qualityHint = $('qualityHint');
+    const emotionEnabled = $('emotionEnabled');
+    const emotionEnabledWrap = $('emotionEnabledWrap');
+    const emotionSliderList = $('emotionSliderList');
+    const emotionStrength = $('emotionStrength');
+    const emotionStrengthVal = $('emotionStrengthVal');
+    const emotionStrengthWrap = $('emotionStrengthWrap');
+    const emotionCfg = $('emotionCfg');
+    const emotionCfgVal = $('emotionCfgVal');
+    const emotionCfgWrap = $('emotionCfgWrap');
+    const emotionHint = $('emotionHint');
     const cleanBackground = $('cleanBackground');
     const cleanBackgroundWrap = $('cleanBackgroundWrap');
     const cleanBackgroundVal = $('cleanBackgroundVal');
@@ -1431,6 +1463,124 @@
       qualityHint.textContent = active
         ? 'Selected quality feature tokens are prepended to the prompt.'
         : 'All quality feature tokens are omitted.';
+    }
+
+    // ─── Emotion control ───
+    function emotionSliderControls() {
+      return Array.from(emotionSliderList.querySelectorAll('.emotion-slider'));
+    }
+
+    function renderEmotionSliders() {
+      const previous = new Map(
+        emotionSliderControls().map(slider => [slider.dataset.name, slider.value]),
+      );
+      const names = Array.isArray(state.speakerCapabilities.emotion_names)
+        ? state.speakerCapabilities.emotion_names.map(String) : [];
+      const axes = Array.isArray(state.speakerCapabilities.emotion_axes)
+        ? state.speakerCapabilities.emotion_axes.map(String) : [];
+
+      emotionSliderList.innerHTML = '';
+      const addSlider = (name, kind) => {
+        const row = document.createElement('div');
+        row.className = 'quality-feature-row';
+
+        const label = document.createElement('div');
+        label.className = 'quality-feature-label';
+        const valSpan = document.createElement('span');
+        valSpan.className = 'param-value';
+        label.textContent = `${name.replace(/_/g, ' ')} `;
+        label.appendChild(valSpan);
+
+        const slider = document.createElement('input');
+        slider.type = 'range';
+        slider.className = 'param-slider emotion-slider';
+        slider.min = '-1'; slider.max = '1'; slider.step = '0.05'; slider.value = '0';
+        slider.dataset.name = name;
+        slider.dataset.kind = kind;
+        slider.disabled = true;
+        if (previous.has(name)) slider.value = previous.get(name);
+        const sync = () => { valSpan.textContent = (+slider.value).toFixed(2); };
+        sync();
+        slider.addEventListener('input', () => { sync(); updateEmotionUI(); });
+
+        row.appendChild(label);
+        row.appendChild(slider);
+        emotionSliderList.appendChild(row);
+      };
+
+      for (const name of names) addSlider(name, 'named');
+      for (const axis of axes) addSlider(axis, 'axis');
+
+      // When the server has per-speaker strength calibration, Strength becomes a
+      // multiplier on the calibrated value (1.0 = calibrated). Otherwise it is the
+      // raw injection strength.
+      const calibrated = !!state.speakerCapabilities.emotion_calibrated;
+      const strengthLabel = document.querySelector('#emotionStrengthWrap .param-label');
+      if (calibrated) {
+        emotionStrength.min = '0'; emotionStrength.max = '3'; emotionStrength.step = '0.05';
+        if (!emotionStrength.dataset.userSet) emotionStrength.value = '1';
+        if (strengthLabel) strengthLabel.childNodes[0].nodeValue = 'Emotion Strength (×calibrated) ';
+      } else {
+        emotionStrength.min = '0'; emotionStrength.max = '12'; emotionStrength.step = '0.1';
+        if (!emotionStrength.dataset.userSet) emotionStrength.value = '3';
+        if (strengthLabel) strengthLabel.childNodes[0].nodeValue = 'Emotion Strength ';
+      }
+      updateEmotionUI();
+    }
+
+    function updateEmotionUI() {
+      const sliders = emotionSliderControls();
+      const supported = !!state.speakerCapabilities.emotion_enabled && sliders.length > 0;
+      if (!supported) emotionEnabled.checked = false;
+
+      emotionEnabled.disabled = !supported;
+      emotionEnabledWrap.classList.toggle('is-disabled', !supported);
+      const active = supported && emotionEnabled.checked;
+      sliders.forEach(slider => { slider.disabled = !active; });
+      emotionStrength.disabled = !active;
+      emotionStrengthWrap.style.display = active ? '' : 'none';
+      emotionStrengthVal.textContent = (+emotionStrength.value).toFixed(2);
+      emotionCfg.disabled = !active;
+      emotionCfgWrap.style.display = active ? '' : 'none';
+      emotionCfgVal.textContent = (+emotionCfg.value).toFixed(2);
+
+      if (!supported) {
+        emotionHint.textContent = 'Current model has no emotion directions configured.';
+        return;
+      }
+      if (!emotionEnabled.checked) {
+        emotionHint.textContent = `${sliders.length} emotion ${sliders.length === 1 ? 'control' : 'controls'} available. Enable to nudge the voice.`;
+        return;
+      }
+      const moved = sliders.filter(slider => Math.abs(+slider.value) > 1e-6).length;
+      emotionHint.textContent = moved
+        ? 'Emotion directions are added to the speaker embedding before synthesis.'
+        : 'All sliders are at 0 (neutral); move one to apply emotion.';
+    }
+
+    function emotionPayload() {
+      const sliders = emotionSliderControls();
+      if (!state.speakerCapabilities.emotion_enabled || !emotionEnabled.checked || !sliders.length) {
+        return null;
+      }
+      const named = {};
+      let valence = 0, arousal = 0;
+      for (const slider of sliders) {
+        const value = +slider.value;
+        if (Math.abs(value) <= 1e-6) continue;
+        if (slider.dataset.kind === 'axis' && slider.dataset.name === 'valence') valence = value;
+        else if (slider.dataset.kind === 'axis' && slider.dataset.name === 'arousal') arousal = value;
+        else named[slider.dataset.name] = value;
+      }
+      if (!Object.keys(named).length && valence === 0 && arousal === 0) return null;
+      return {
+        emotion_enabled: true,
+        emotion_sliders: named,
+        emotion_valence: valence,
+        emotion_arousal: arousal,
+        emotion_strength: +emotionStrength.value,
+        emotion_cfg_scale: +emotionCfg.value,
+      };
     }
 
     // ─── Voice marker toggles ───
@@ -2030,6 +2180,10 @@
           accurate_mode_token_enabled: !!caps.accurate_mode_token_enabled,
           text_normalization_enabled: caps.text_normalization_enabled !== false,
           text_norm_languages: Array.isArray(caps.text_norm_languages) ? caps.text_norm_languages : [],
+          emotion_enabled: !!caps.emotion_enabled,
+          emotion_names: Array.isArray(caps.emotion_names) ? caps.emotion_names : [],
+          emotion_axes: Array.isArray(caps.emotion_axes) ? caps.emotion_axes : [],
+          emotion_calibrated: !!caps.emotion_calibrated,
         };
         if (state.speakerCapabilities.speaker_enabled) {
           speakerAudioUpload.disabled = false;
@@ -2061,6 +2215,7 @@
         updateRepetitionCodebooksUI();
         renderSpeakingRateBuckets();
         renderQualityBuckets();
+        renderEmotionSliders();
         renderTextNormLanguages();
         updateCleanBackgroundUI();
         updateAccurateModeUI();
@@ -2080,6 +2235,10 @@
           accurate_mode_token_enabled: false,
           text_normalization_enabled: true,
           text_norm_languages: [],
+          emotion_enabled: false,
+          emotion_names: [],
+          emotion_axes: [],
+          emotion_calibrated: false,
         };
         speakerAudioUpload.disabled = false;
         speakerEmbeddingUpload.disabled = false;
@@ -2090,6 +2249,7 @@
         updateRepetitionCodebooksUI();
         renderSpeakingRateBuckets();
         renderQualityBuckets();
+        renderEmotionSliders();
         renderTextNormLanguages();
         updateCleanBackgroundUI();
         updateAccurateModeUI();
@@ -2183,6 +2343,8 @@
         });
         body.quality_buckets = selectedQualityBuckets;
       }
+      const emotion = emotionPayload();
+      if (emotion) Object.assign(body, emotion);
 
       try {
         const res = await fetch(`${endpoint}/tts/generate`, {
@@ -2586,6 +2748,9 @@
     speakingRateEnabled.addEventListener('change', updateSpeakingRateUI);
     speakingRateBucket.addEventListener('change', updateSpeakingRateUI);
     qualityEnabled.addEventListener('change', updateQualityUI);
+    emotionEnabled.addEventListener('change', updateEmotionUI);
+    emotionStrength.addEventListener('input', () => { emotionStrength.dataset.userSet = '1'; updateEmotionUI(); });
+    emotionCfg.addEventListener('input', () => { emotionCfgVal.textContent = (+emotionCfg.value).toFixed(2); });
     textNormLanguage.addEventListener('change', updateTextNormUI);
     cleanBackground.addEventListener('change', updateCleanBackgroundUI);
     accurateMode.addEventListener('change', updateAccurateModeUI);
@@ -2650,6 +2815,7 @@
     updateRepetitionCodebooksUI();
     renderSpeakingRateBuckets();
     renderQualityBuckets();
+    renderEmotionSliders();
     renderTextNormLanguages();
     updateCleanBackgroundUI();
     updateAccurateModeUI();

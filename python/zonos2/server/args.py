@@ -32,6 +32,7 @@ class ServerArgs(SchedulerConfig):
     tts_quality_buckets: Dict[str, Tuple[str, ...]] = field(default_factory=dict)
     tts_quality_dropout: Dict[str, float] | None = None
     tts_default_voices_dir: str | None = None
+    tts_emotion_directions_dir: str | None = "emotion_directions"
 
     @property
     def share_tokenizer(self) -> bool:
@@ -282,6 +283,16 @@ def parse_args(args: List[str], run_shell: bool = False) -> Tuple[ServerArgs, bo
         help="Directory of default speaker audio or .npy/.npz embedding files to pre-populate in the TTS UI.",
     )
 
+    parser.add_argument(
+        "--tts-emotion-directions-dir",
+        type=str,
+        default=ServerArgs.tts_emotion_directions_dir,
+        help="Directory of emotion direction vectors (manifest.json + .npy) built by "
+        "scripts/build_emotion_directions.py. Defaults to ./emotion_directions/; emotion "
+        "sliders auto-enable when that folder is present and are disabled otherwise. "
+        "Pass an empty string to force-disable.",
+    )
+
     # Parse arguments
     kwargs = parser.parse_args(args).__dict__.copy()
 
@@ -308,6 +319,8 @@ def parse_args(args: List[str], run_shell: bool = False) -> Tuple[ServerArgs, bo
         kwargs["model_path"] = os.path.expanduser(kwargs["model_path"])
     if kwargs.get("tts_default_voices_dir"):
         kwargs["tts_default_voices_dir"] = os.path.expanduser(kwargs["tts_default_voices_dir"])
+    if kwargs.get("tts_emotion_directions_dir"):
+        kwargs["tts_emotion_directions_dir"] = os.path.expanduser(kwargs["tts_emotion_directions_dir"])
 
     DTYPE_MAP = {
         "float16": torch.float16,

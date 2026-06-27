@@ -863,6 +863,13 @@ class Zonos2ForCausalLM(BaseOP):
                 projected_speaker = self.speaker_projection.forward(
                     speaker_emb_values.to(dtype=self.speaker_projection.weight.dtype)
                 )
+                # Optional emotion control injected directly in the model's hidden
+                # space, after the speaker projection (space="proj" directions).
+                emotion_delta = getattr(batch, "speaker_emotion_delta_values", None)
+                if emotion_delta is not None:
+                    projected_speaker = projected_speaker + emotion_delta.to(
+                        dtype=projected_speaker.dtype
+                    )
                 x = x.index_copy(0, speaker_token_positions, projected_speaker.to(dtype=x.dtype))
 
         x, _ = self.emb_norm.forward(x, None)
