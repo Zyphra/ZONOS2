@@ -1185,6 +1185,11 @@ class TTSGenerateRequest(BaseModel):
     repetition_penalty: float = 1.2
     repetition_codebooks: int = 8
     seed: int | None = None
+    # Speaker-embedding classifier-free guidance scale (1.0 = disabled).
+    cfg_scale: float = 1.0
+    # Acoustic-prefix CFG scale for long-form continuation chunks (1.0 = disabled;
+    # <1 / negative downweights the prefix).
+    prefix_cfg_scale: float = 1.0
     speaking_rate_enabled: bool = False
     speed: float | None = None
     speaking_rate: float | None = None
@@ -1200,6 +1205,21 @@ class TTSGenerateRequest(BaseModel):
     clean_speaker_background: bool = False
     # Accurate mode (on) vs expressive mode (off).
     accurate_mode: bool = True
+    # Long-form generation: None = auto (engage when text exceeds chunk size),
+    # True/False to force on/off. Text is split into word-bounded chunks of
+    # long_form_chunk_chars (new text per step); long_form_window_chunks is the
+    # total number of chunks fed per step, so window-1 previous chunks are
+    # teacher-forced. window_chunks=2 keeps one chunk of context; =1 disables it.
+    long_form: bool | None = None
+    long_form_chunk_chars: int = 150
+    long_form_window_chunks: int = 2
+    # Pin the whole first chunk into every prefix (alongside the rolling
+    # window_chunks-1 recent chunks), evicting the middle. Prevents timbre drift
+    # over long passages.
+    long_form_pin_anchor: bool = True
+    # Chunk splitting: "word" (greedy word packing) or "sentence" (prefer
+    # sentence boundaries, falling back to words for over-long sentences).
+    long_form_split_mode: str = "word"
     stream: bool = True
     speaker_audio_base64: str | None = None
     speaker_audio_name: str | None = None
@@ -1562,12 +1582,19 @@ async def tts_generate(
                 repetition_penalty=req.repetition_penalty,
                 repetition_codebooks=req.repetition_codebooks,
                 seed=req.seed,
+                cfg_scale=req.cfg_scale,
+                prefix_cfg_scale=req.prefix_cfg_scale,
             ),
             speaker_embedding=speaker_embedding,
             clean_speaker_background=req.clean_speaker_background,
             accurate_mode=req.accurate_mode,
             speaking_rate_bucket=speaking_rate_bucket,
             quality_buckets=quality_buckets,
+            long_form=req.long_form,
+            long_form_chunk_chars=req.long_form_chunk_chars,
+            long_form_window_chunks=req.long_form_window_chunks,
+            long_form_pin_anchor=req.long_form_pin_anchor,
+            long_form_split_mode=req.long_form_split_mode,
         )
     )
 

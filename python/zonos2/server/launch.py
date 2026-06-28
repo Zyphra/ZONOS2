@@ -91,6 +91,7 @@ def launch_server(run_shell: bool = False) -> None:
                 len(server_args.tts_quality_buckets.get(feature, ()))
                 for feature in server_args.tts_quality_features
             ],
+            "quality_features": list(server_args.tts_quality_features),
             "speaker_background_num_buckets": (
                 2 if server_args.tts_speaker_background_token_enabled else 0
             ),

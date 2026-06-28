@@ -102,6 +102,11 @@ for i, result in enumerate(results):
 
 Full-featured TTS endpoint with streaming support.
 
+Long text is automatically split into overlapping chunks, each synthesized as a
+teacher-forced continuation of prior audio. This avoids boundary discontinuities and
+voice drift over long passages; see the `long_form_*` parameters below to tune or
+disable it.
+
 **Request body:**
 
 | Parameter | Type | Default | Description |
@@ -128,6 +133,13 @@ Full-featured TTS endpoint with streaming support.
 | `quality_values` | object \| list \| null | `null` | Raw quality metric values, mapped to buckets server-side (alternative to `quality_buckets`) |
 | `clean_speaker_background` | bool | `false` | Mark the reference voice as having a clean background (supported models) |
 | `accurate_mode` | bool | `true` | `true` = accurate mode (closer voice match), `false` = expressive mode |
+| `cfg_scale` | float | `1.0` | Speaker-embedding classifier-free guidance; `1.0` disables, `>1` pushes generation toward the target speaker |
+| `prefix_cfg_scale` | float | `1.0` | Acoustic-prefix classifier-free guidance for long-form continuation chunks; `1.0` disables, `>1` sharpens continuity across chunk joins, `<1`/negative downweights the prefix. No effect on the first chunk |
+| `long_form` | bool \| null | `null` | `null` = auto (engage when text exceeds the chunk size), `true`/`false` force long-form on/off |
+| `long_form_chunk_chars` | int | `150` | New text generated per step, in characters |
+| `long_form_window_chunks` | int | `2` | Total chunks fed per step; `window-1` prior chunks are teacher-forced context. `1` disables teacher forcing |
+| `long_form_pin_anchor` | bool | `true` | Pin the whole first chunk into every continuation prefix to prevent timbre drift over long passages |
+| `long_form_split_mode` | string | `"word"` | Chunking strategy: `"word"` (greedy word packing) or `"sentence"` (sentence boundaries, falling back to words for over-long sentences) |
 | `stream` | bool | `true` | Stream audio chunks |
 
 **Response:** Raw PCM audio (`audio/pcm`, float32, 44.1 kHz, mono). Headers include `X-Audio-Sample-Rate`, `X-Audio-Channels`, `X-Audio-Format`.

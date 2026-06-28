@@ -920,12 +920,43 @@
         <input type="range" class="param-slider" id="minp" min="0" max="1" step="0.01" value="0.18">
       </div>
       <div class="param-group">
+        <label class="param-label">Speaker CFG <span class="param-value" id="cfgVal">1.0</span></label>
+        <input type="range" class="param-slider" id="cfg" min="1" max="5" step="0.1" value="1">
+      </div>
+      <div class="param-group">
+        <label class="param-label">Prefix CFG <span class="param-value" id="prefixCfgVal">1.0</span></label>
+        <input type="range" class="param-slider" id="prefixCfg" min="-2" max="5" step="0.1" value="1">
+      </div>
+      <div class="param-group">
         <label class="param-label">Max Tokens <span class="param-value" id="maxtVal">4096</span></label>
         <input type="range" class="param-slider" id="maxtokens" min="64" max="4096" step="64" value="4096">
       </div>
       <div class="param-group">
         <label class="param-label">Text Limit <span class="param-value" id="textLimitVal">500</span></label>
-        <input type="range" class="param-slider" id="textlimit" min="100" max="5000" step="50" value="500">
+        <input type="range" class="param-slider" id="textlimit" min="100" max="50000" step="50" value="500">
+      </div>
+      <div class="param-group">
+        <label class="param-label">Long-form</label>
+        <select class="param-select" id="longFormMode">
+          <option value="auto">Auto (split long text)</option>
+          <option value="on">Always on</option>
+          <option value="off">Off</option>
+        </select>
+        <label class="param-label" style="margin-top:8px">Split Mode</label>
+        <select class="param-select" id="longFormSplitMode">
+          <option value="word">Word</option>
+          <option value="sentence">Sentence</option>
+        </select>
+        <label class="param-label" style="margin-top:8px">Chunk Size <span class="param-value" id="longFormChunkVal">150</span></label>
+        <input type="range" class="param-slider" id="longformchunk" min="50" max="400" step="10" value="150">
+        <label class="param-label" style="margin-top:8px">Window (chunks) <span class="param-value" id="longFormWindowVal">2</span></label>
+        <input type="range" class="param-slider" id="longformwindow" min="1" max="4" step="1" value="2">
+        <label class="param-label" style="margin-top:8px">Pin first chunk (anti-drift)</label>
+        <select class="param-select" id="longFormPinAnchor">
+          <option value="on">On</option>
+          <option value="off">Off</option>
+        </select>
+        <div class="param-hint">Chunk Size = new text generated per step (chars). Window = total whole chunks fed per step; window&minus;1 recent chunks are teacher-forced (2 keeps one chunk of context; 1 disables the recent window). Pin first chunk re-grounds every step on the whole first chunk and evicts the middle, preventing voice drift over long passages. For a shorter effective overlap, lower Chunk Size so each chunk is shorter.</div>
       </div>
       <div class="param-group">
         <label class="param-label">End Fade <span class="param-value" id="fadeVal">20 ms</span></label>
@@ -2150,6 +2181,8 @@
         topk: parseInt($('topk').value),
         top_p: parseFloat($('topp').value),
         min_p: parseFloat($('minp').value),
+        cfg_scale: parseFloat($('cfg').value),
+        prefix_cfg_scale: parseFloat($('prefixCfg').value),
         max_tokens: parseInt($('maxtokens').value),
         fade_out_ms: parseFloat($('fadeout').value),
         speaking_rate_enabled: useSpeakingRateBucket,
@@ -2159,6 +2192,11 @@
         repetition_penalty: parseFloat($('reppenalty').value),
         repetition_codebooks: parseInt($('repcodebooks').value),
         seed: seedVal ? parseInt(seedVal) : null,
+        long_form: $('longFormMode').value === 'auto' ? null : $('longFormMode').value === 'on',
+        long_form_chunk_chars: parseInt($('longformchunk').value) || 150,
+        long_form_window_chunks: parseInt($('longformwindow').value) || 2,
+        long_form_pin_anchor: $('longFormPinAnchor').value === 'on',
+        long_form_split_mode: $('longFormSplitMode').value || 'word',
         stream: true,
         speaker_embedding_id: speakerEmbeddingId,
         clean_speaker_background: backgroundTokenEnabled ? cleanBackground.checked : false,
@@ -2568,11 +2606,15 @@
       ['topk', 'topkVal', v => v],
       ['topp', 'toppVal', v => parseFloat(v).toFixed(2)],
       ['minp', 'minpVal', v => parseFloat(v).toFixed(2)],
+      ['cfg', 'cfgVal', v => parseFloat(v).toFixed(1)],
+      ['prefixCfg', 'prefixCfgVal', v => parseFloat(v).toFixed(1)],
       ['maxtokens', 'maxtVal', v => v],
       ['fadeout', 'fadeVal', v => `${v} ms`],
       ['repwindow', 'repWindowVal', v => v],
       ['reppenalty', 'repPenaltyVal', v => parseFloat(v).toFixed(2)],
       ['repcodebooks', 'repCodebooksVal', v => v],
+      ['longformchunk', 'longFormChunkVal', v => v],
+      ['longformwindow', 'longFormWindowVal', v => v],
     ];
 
     sliderBindings.forEach(([sliderId, valId, fmt]) => {

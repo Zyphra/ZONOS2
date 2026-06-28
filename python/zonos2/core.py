@@ -65,6 +65,9 @@ class TTSSamplingParams:
     repetition_penalty: float = 1.2
     repetition_codebooks: int = 8
     seed: int | None = None
+    # Speaker-embedding classifier-free guidance scale (1.0 = disabled). See the
+    # matching field on zonos2.message.tts.TTSSamplingParams.
+    cfg_scale: float = 1.0
 
 
 @dataclass(eq=False)
@@ -89,6 +92,12 @@ class TTSReq:
     rng: torch.Generator | None = None  # Per-request RNG for deterministic sampling
     speaker_embedding: torch.Tensor | None = None  # 1D CPU float32 tensor
     speaker_token_position: int = -1  # Injection position within the prompt sequence
+    # Speaker-embedding classifier-free guidance. On the conditional request,
+    # cfg_scale > 1.0 and cfg_twin points at its paired unconditional request.
+    # is_cfg_uncond marks the twin (no speaker embedding; internal, no output).
+    cfg_scale: float = 1.0
+    is_cfg_uncond: bool = False
+    cfg_twin: "TTSReq | None" = None
 
     def __post_init__(self) -> None:
         assert self.input_ids.is_cpu
