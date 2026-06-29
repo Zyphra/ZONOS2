@@ -77,7 +77,9 @@ ffmpeg -f f32le -ar 44100 -ac 1 -i output.pcm output.wav
 ## Python API (offline inference)
 
 You can also run the engine directly in a Python script, without starting a
-server, via `TTSLLM`:
+server, via `TTSLLM`. The offline path is at parity with the server: it applies
+the same text normalization, supports voice cloning, and exposes the same
+conditioning controls.
 
 ```python
 from zonos2.message import TTSSamplingParams
@@ -94,6 +96,42 @@ for i, result in enumerate(results):
     print(f"frames={len(result['audio_tokens'])}, eos_frame={result['eos_frame']}")
     tts.save_audio(result["audio"], f"output_{i}.wav")
 ```
+
+### Voice cloning
+
+Compute a speaker embedding from a reference audio file (decoded with the same
+ffmpeg path the server uses) and pass it to `generate()`:
+
+```python
+emb = tts.embed_speaker_file("default_voices/AmericanFemale.mp3")
+
+result = tts.generate_one(
+    "This is spoken in the cloned voice.",
+    TTSSamplingParams(seed=42),
+    speaker_embedding=emb,         # also: clean_speaker_background=..., accurate_mode=...
+)
+tts.save_audio(result["audio"], "cloned.wav")
+```
+
+### Conditioning controls (server parity)
+
+`generate()` / `generate_one()` accept the same high-level controls as the
+server and resolve them with the server's exact bucketing logic:
+
+```python
+tts.generate_one(
+    "Numbers like 123 are normalized to words.",
+    TTSSamplingParams(),
+    language="en_us",              # text normalization is on by default
+    speed=1.1,                     # or speaking_rate=<bytes/sec>, or speaking_rate_bucket=<int>
+    quality_values={"trailing_silence_s": 0.4},   # or quality_buckets=...
+    max_tokens=600,                # clamped to the model limit
+)
+```
+
+Set `text_normalization=False` to feed text through verbatim. The standalone
+resolvers (`resolve_speaking_rate_bucket`, `resolve_quality_buckets`,
+`resolve_max_tokens`) are also available if you want to precompute buckets.
 
 
 ## API Reference

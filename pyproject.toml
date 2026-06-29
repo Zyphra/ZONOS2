@@ -124,6 +124,9 @@ addopts = [
     "--cov-report=term-missing",
     "--cov-report=html",
 ]
+markers = [
+    "gpu: test loads model weights and requires a GPU (set ZONOS2_TEST_MODEL to run)",
+]
 
 [tool.mypy]
 python_version = "3.10"

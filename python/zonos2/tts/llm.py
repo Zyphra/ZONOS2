@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass
-from typing import Dict, List, Tuple
+from typing import Dict, List
 
 import torch
 from zonos2.distributed import DistributedInfo
@@ -40,6 +41,21 @@ class TTSRequestStatus:
     output_frames: List[List[int]]  # List of audio code frames
     eos_frame: int | None = None
     finished: bool = False
+
+
+@dataclass
+class PendingRequest:
+    """A tokenized prompt queued for offline generation.
+
+    Mirrors the per-request fields the server forwards on a ``TTSUserMsg`` so the
+    offline path conditions identically (text already tokenized into ``input_ids``).
+    """
+
+    input_ids: torch.Tensor  # 2D (seq_len, frame_width)
+    sampling_params: TTSSamplingParams
+    speaker_embedding: torch.Tensor | None = None
+    clean_speaker_background: bool = False
+    accurate_mode: bool = True
 
 
 class TTSLLM(TTSScheduler):
@@ -114,8 +130,22 @@ class TTSLLM(TTSScheduler):
 
         self.decode_audio = decode_audio
 
+        # Text normalization, gated exactly like the server tokenizer worker so the
+        # offline path produces the same tokens (e.g. "123" -> "one hundred ...").
+        from zonos2.tokenizer.textnorm import TTSTextNormalizer, normalization_enabled
+
+        self._text_normalizer = TTSTextNormalizer() if normalization_enabled() else None
+        if self._text_normalizer is not None:
+            # Compile the English grammars off the hot path, matching the server.
+            threading.Thread(
+                target=self._text_normalizer.warmup, args=(["en"],), daemon=True
+            ).start()
+
+        # Speaker encoder is loaded lazily on first embed_speaker* call.
+        self._speaker_embedder = None
+
         # Request tracking
-        self.pending_requests: List[Tuple[torch.Tensor, TTSSamplingParams]] = []
+        self.pending_requests: List[PendingRequest] = []
         self.status_map: Dict[int, TTSRequestStatus] = {}
         self.counter = 0
 
@@ -160,23 +190,167 @@ class TTSLLM(TTSScheduler):
         resolved += [None] * (len(self.quality_features) - len(resolved))
         return resolved
 
+    @staticmethod
+    def _broadcast_per_prompt(value, n: int) -> List:
+        """Expand a scalar to one value per prompt, or pass a per-prompt list through.
+
+        A plain ``list`` is treated as per-prompt; everything else (including a
+        single ``torch.Tensor`` speaker embedding) is broadcast to every prompt.
+        """
+        if isinstance(value, list):
+            if len(value) != n:
+                raise ValueError(
+                    f"Expected {n} per-prompt values, got {len(value)}."
+                )
+            return value
+        return [value] * n
+
+    def embed_speaker(self, wav: torch.Tensor, sample_rate: int) -> torch.Tensor:
+        """Compute a speaker embedding from a waveform, matching the server.
+
+        Mirrors the server's _compute_speaker_embedding_from_waveform: runs the
+        release speaker encoder and returns the float32 CPU embedding whose size
+        matches the model's speaker_embedding_dim. The result can be passed
+        directly as the ``speaker_embedding`` argument to generate().
+        """
+        if not self.speaker_enabled or self.speaker_embedding_dim <= 0:
+            raise ValueError("Current model does not support speaker conditioning.")
+
+        if self._speaker_embedder is None:
+            import os
+
+            from zonos2.models.speaker_cloning import Qwen3SpeakerEmbedding
+
+            # Load the encoder on CPU by default (same env var the server uses) so
+            # it does not permanently occupy GPU memory next to the TTS model.
+            device = os.getenv("ZONOS2_SPEAKER_EMBEDDER_DEVICE", "cpu")
+            self._speaker_embedder = Qwen3SpeakerEmbedding(device=device)
+
+        with torch.inference_mode():
+            output = self._speaker_embedder(wav, sample_rate)
+
+        if isinstance(output, tuple):
+            candidates = [t.squeeze(0).to(dtype=torch.float32, device="cpu") for t in output]
+        else:
+            candidates = [output.squeeze(0).to(dtype=torch.float32, device="cpu")]
+
+        for candidate in candidates:
+            if candidate.numel() == self.speaker_embedding_dim:
+                return candidate.contiguous()
+
+        produced = ", ".join(str(c.numel()) for c in candidates)
+        raise ValueError(
+            f"Reference embedding dimension mismatch. Model expects "
+            f"{self.speaker_embedding_dim}, but speaker encoder produced {produced}."
+        )
+
+    def embed_speaker_file(self, path: str) -> torch.Tensor:
+        """Load an audio file and compute its speaker embedding (see embed_speaker).
+
+        Decodes via the same ffmpeg path the server uses
+        (``_decode_audio_bytes``) so the resulting embedding matches the server's
+        for the same file; falls back to torchaudio if the server module (and its
+        ffmpeg dependency) is unavailable.
+        """
+        with open(path, "rb") as f:
+            audio_bytes = f.read()
+        try:
+            from zonos2.tts.audio import _decode_audio_bytes
+
+            wav, sample_rate = _decode_audio_bytes(audio_bytes)
+        except Exception:
+            import torchaudio
+
+            wav, sample_rate = torchaudio.load(path)
+        return self.embed_speaker(wav, sample_rate)
+
+    def _server_config_adapter(self):
+        """Minimal stand-in for the server's ServerArgs.
+
+        The server resolution helpers only read ``model_config``, ``max_seq_len``
+        and optional ``tts_*`` overrides (getattr-defaulted), so this lets the
+        offline path reuse them verbatim for guaranteed parity.
+        """
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            model_config=self.engine.model_config,
+            max_seq_len=self.engine.max_seq_len,
+        )
+
+    def resolve_speaking_rate_bucket(
+        self,
+        *,
+        speaking_rate_bucket: int | None = None,
+        speaking_rate: float | None = None,
+        speed: float | None = None,
+    ) -> int | None:
+        """Resolve a speaking-rate bucket from a bucket index, a bytes/sec rate, or
+        a speed multiplier, using the server's exact bucketing logic.
+
+        Provide at most one of the three (matching the server).
+        """
+        from zonos2.tts.conditioning import _resolve_speaking_rate_bucket
+
+        return _resolve_speaking_rate_bucket(
+            self._server_config_adapter(),
+            speaking_rate_bucket=speaking_rate_bucket,
+            speaking_rate=speaking_rate,
+            speed=speed,
+            speaking_rate_enabled=True,
+        )
+
+    def resolve_quality_buckets(
+        self,
+        *,
+        quality_buckets=None,
+        quality_values=None,
+    ) -> List[int | None] | None:
+        """Resolve per-feature quality bucket indices from bucket indices or raw
+        metric values, using the server's exact bucketing logic.
+
+        Provide at most one of ``quality_buckets`` / ``quality_values``.
+        """
+        from zonos2.tts.conditioning import _resolve_quality_buckets
+
+        return _resolve_quality_buckets(
+            self._server_config_adapter(),
+            quality_buckets=quality_buckets,
+            quality_values=quality_values,
+            quality_enabled=True,
+        )
+
+    def resolve_max_tokens(self, requested: int | None) -> int:
+        """Clamp a requested max_tokens to the model limit (server parity)."""
+        from zonos2.tts.conditioning import _resolve_tts_max_tokens
+
+        return _resolve_tts_max_tokens(self._server_config_adapter(), requested)
+
     def _tokenize_one(
         self,
         prompt: str | List[List[int]],
         speaking_rate_bucket: int | None = None,
         quality_buckets: Dict[str, int | None] | List[int | None] | None = None,
+        language: str = "en_us",
+        text_normalization: bool = True,
     ) -> torch.Tensor:
         """Convert a prompt to 2D token tensor.
 
         Args:
             prompt: Text string or pre-tokenized unpacked tokens
+            language: Server language code used for text normalization.
+            text_normalization: Apply language-aware text normalization (matching
+                the server) before tokenizing string prompts.
 
         Returns:
             2D tensor of shape (seq_len, frame_width)
         """
         if isinstance(prompt, str):
+            text = prompt
+            if text_normalization and self._text_normalizer is not None:
+                text = self._text_normalizer.normalize(text, language)
             return self._prompt_builder.build(
-                prompt,
+                text,
                 speaking_rate_bucket=speaking_rate_bucket,
                 quality_buckets=self._resolve_quality_buckets(quality_buckets),
             )
@@ -193,11 +367,11 @@ class TTSLLM(TTSScheduler):
         results: List[BaseTTSBackendMsg] = []
         added, sum_input_len = 0, 0
 
-        for i, (input_ids, sampling_params) in enumerate(self.pending_requests):
+        for i, req in enumerate(self.pending_requests):
             if sum_input_len >= self.prefill_budget:
                 break
 
-            input_len = len(input_ids)
+            input_len = len(req.input_ids)
             sum_input_len += input_len
             uid = self.counter + added
             added += 1
@@ -205,14 +379,21 @@ class TTSLLM(TTSScheduler):
             results.append(
                 TTSUserMsg(
                     uid=uid,
-                    input_ids=input_ids,
-                    sampling_params=sampling_params,
+                    input_ids=req.input_ids,
+                    sampling_params=req.sampling_params,
+                    # Speaker conditioning, identical to the server's TTSUserMsg.
+                    # The shared scheduler injects the speaker slot + background /
+                    # accurate-mode markers when an embedding is present, so the
+                    # offline path only needs to pass these fields through.
+                    speaker_embedding=req.speaker_embedding,
+                    clean_speaker_background=req.clean_speaker_background,
+                    accurate_mode=req.accurate_mode,
                 )
             )
 
             self.status_map[uid] = TTSRequestStatus(
                 uid=i,  # Map back to original index
-                input_ids=input_ids,
+                input_ids=req.input_ids,
                 output_frames=[],
             )
 
@@ -238,7 +419,16 @@ class TTSLLM(TTSScheduler):
         sampling_params: TTSSamplingParams | List[TTSSamplingParams],
         decode_audio: bool | None = None,
         speaking_rate_bucket: int | List[int | None] | None = None,
+        speaking_rate: float | None = None,
+        speed: float | None = None,
         quality_buckets: Dict[str, int | None] | List[int | None] | None = None,
+        quality_values: Dict[str, float | None] | List[float | None] | None = None,
+        max_tokens: int | None = None,
+        language: str = "en_us",
+        text_normalization: bool = True,
+        speaker_embedding: torch.Tensor | List[torch.Tensor | None] | None = None,
+        clean_speaker_background: bool | List[bool] = False,
+        accurate_mode: bool | List[bool] = True,
     ) -> List[Dict]:
         """Generate audio tokens for a batch of prompts.
 
@@ -247,9 +437,29 @@ class TTSLLM(TTSScheduler):
             sampling_params: Sampling parameters (single or per-prompt)
             decode_audio: Override instance setting for audio decoding
             speaking_rate_bucket: Optional bucket index, or one bucket per prompt.
+            speaking_rate: Target speaking rate in bytes/sec; resolved to a bucket
+                applied to all prompts (server parity). Mutually exclusive with
+                speaking_rate_bucket / speed.
+            speed: Speed multiplier (1.0 = neutral); resolved to a bucket applied
+                to all prompts. Mutually exclusive with the two above.
             quality_buckets: Quality bucket indices, keyed by feature name or as
                 a list in the model's feature order. None applies the default
                 conditioning; pass {} to disable quality tokens.
+            quality_values: Raw per-feature quality metric values, resolved to
+                bucket indices (server parity). Mutually exclusive with
+                quality_buckets.
+            max_tokens: Per-request decode cap; clamped to the model limit and
+                applied to every sampling_params (server parity).
+            language: Server language code (e.g. "en_us") for text normalization.
+            text_normalization: Apply language-aware text normalization, matching
+                the server default.
+            speaker_embedding: Speaker embedding tensor for voice cloning (single,
+                applied to all prompts, or one per prompt; None disables cloning).
+                Use embed_speaker()/embed_speaker_file() to compute one from audio.
+            clean_speaker_background: Mark the speaker embedding as clean-background
+                (single or per-prompt), matching the server flag.
+            accurate_mode: Accurate (on) vs expressive (off) mode, matching the
+                server default of True (single or per-prompt).
 
         Returns:
             List of dicts with:
@@ -258,31 +468,83 @@ class TTSLLM(TTSScheduler):
                 - "audio": PCM audio bytes if decode_audio=True, else None
                 - "sample_rate": Audio sample rate (44100)
         """
+        # Validate the language code up front, matching the server's
+        # _normalize_tts_request_language behavior.
+        if text_normalization:
+            from zonos2.tokenizer.textnorm import SERVER_TO_NEMO_LANG
+
+            normalized_lang = str(language or "").strip().lower().replace("-", "_")
+            if normalized_lang not in SERVER_TO_NEMO_LANG:
+                supported = ", ".join(SERVER_TO_NEMO_LANG)
+                raise ValueError(
+                    f"Unsupported language code: {language!r}. Supported: {supported}."
+                )
+            language = normalized_lang
+
+        # Resolve continuous speaking-rate / quality controls to buckets using the
+        # server's exact logic (mutually exclusive sources, as on the server).
+        if sum(v is not None for v in (speaking_rate_bucket, speaking_rate, speed)) > 1:
+            raise ValueError(
+                "Provide only one of speaking_rate_bucket, speaking_rate, or speed."
+            )
+        if speaking_rate is not None or speed is not None:
+            speaking_rate_bucket = self.resolve_speaking_rate_bucket(
+                speaking_rate=speaking_rate, speed=speed
+            )
+        if quality_values is not None:
+            if quality_buckets is not None:
+                raise ValueError("Provide only one of quality_buckets or quality_values.")
+            quality_buckets = self.resolve_quality_buckets(quality_values=quality_values)
+
         # Reset state
         self.pending_requests = []
         self.status_map = {}
         self.counter = 0
 
-        # Normalize sampling_params
+        # Normalize per-prompt arguments
         if isinstance(sampling_params, TTSSamplingParams):
             sampling_params = [sampling_params] * len(prompts)
+        # Clamp max_tokens to the model limit and apply to every request.
+        if max_tokens is not None:
+            from dataclasses import replace
+
+            clamped = self.resolve_max_tokens(max_tokens)
+            sampling_params = [replace(sp, max_tokens=clamped) for sp in sampling_params]
         if isinstance(speaking_rate_bucket, list):
             speaking_rate_buckets = speaking_rate_bucket
         else:
             speaking_rate_buckets = [speaking_rate_bucket] * len(prompts)
+        speaker_embeddings = self._broadcast_per_prompt(speaker_embedding, len(prompts))
+        clean_backgrounds = self._broadcast_per_prompt(
+            clean_speaker_background, len(prompts)
+        )
+        accurate_modes = self._broadcast_per_prompt(accurate_mode, len(prompts))
 
         # Tokenize and queue all requests
-        for prompt, sp, rate_bucket in zip(
+        for prompt, sp, rate_bucket, spk_emb, clean_bg, acc_mode in zip(
             prompts,
             sampling_params,
             speaking_rate_buckets,
+            speaker_embeddings,
+            clean_backgrounds,
+            accurate_modes,
         ):
             input_ids = self._tokenize_one(
                 prompt,
                 speaking_rate_bucket=rate_bucket,
                 quality_buckets=quality_buckets,
+                language=language,
+                text_normalization=text_normalization,
             )
-            self.pending_requests.append((input_ids, sp))
+            self.pending_requests.append(
+                PendingRequest(
+                    input_ids=input_ids,
+                    sampling_params=sp,
+                    speaker_embedding=spk_emb,
+                    clean_speaker_background=bool(clean_bg),
+                    accurate_mode=bool(acc_mode),
+                )
+            )
 
         # Run generation
         try:
@@ -341,19 +603,22 @@ class TTSLLM(TTSScheduler):
         sampling_params: TTSSamplingParams | None = None,
         decode_audio: bool | None = None,
         speaking_rate_bucket: int | None = None,
+        speaking_rate: float | None = None,
+        speed: float | None = None,
         quality_buckets: Dict[str, int | None] | List[int | None] | None = None,
+        quality_values: Dict[str, float | None] | List[float | None] | None = None,
+        max_tokens: int | None = None,
+        language: str = "en_us",
+        text_normalization: bool = True,
+        speaker_embedding: torch.Tensor | None = None,
+        clean_speaker_background: bool = False,
+        accurate_mode: bool = True,
     ) -> Dict:
         """Generate audio for a single prompt.
 
-        Convenience method that wraps generate() for single inputs.
-
-        Args:
-            prompt: Text string or pre-tokenized prompt
-            sampling_params: Sampling parameters (default: TTSSamplingParams())
-            decode_audio: Override instance setting for audio decoding
-            speaking_rate_bucket: Optional speaking-rate conditioning bucket.
-            quality_buckets: Quality bucket indices by feature name; None applies
-                the default conditioning, {} disables quality tokens.
+        Convenience method that wraps generate() for single inputs. See generate()
+        for the full argument semantics (speaking_rate/speed, quality_values,
+        max_tokens, etc.).
 
         Returns:
             Dict with audio_tokens, eos_frame, audio, sample_rate
@@ -366,7 +631,16 @@ class TTSLLM(TTSScheduler):
             sampling_params,
             decode_audio=decode_audio,
             speaking_rate_bucket=speaking_rate_bucket,
+            speaking_rate=speaking_rate,
+            speed=speed,
             quality_buckets=quality_buckets,
+            quality_values=quality_values,
+            max_tokens=max_tokens,
+            language=language,
+            text_normalization=text_normalization,
+            speaker_embedding=speaker_embedding,
+            clean_speaker_background=clean_speaker_background,
+            accurate_mode=accurate_mode,
         )
         return results[0]
 
