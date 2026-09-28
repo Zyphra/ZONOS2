@@ -27,6 +27,14 @@ Speaker-conditioned checkpoints can use saved `.npy`/`.npz` embeddings or upload
 
 Additive emotion-direction vectors nudge a voice toward an emotion (happy/sad/angry/surprised) or along valence/arousal axes while preserving speaker identity. Directions load from `--tts-emotion-directions-dir` (defaults to `./emotion_directions/`, auto-enabling sliders when present); per-request via `emotion_enabled` + `emotion_sliders`/`emotion_valence`/`emotion_arousal`, with `emotion_strength` and `emotion_cfg_scale` controlling intensity. Build sets with `scripts/build_emotion_directions.py` and calibrate strength with `scripts/calibrate_emotion_strength.py`.
 
+## Long-form Generation
+
+Text longer than `long_form_chunk_chars` is split into chunks (`long_form_split_mode`: greedy `"word"` packing or `"sentence"` boundaries) and synthesized one chunk per step. Each step regenerates the current chunk as a teacher-forced continuation of the previous `long_form_window_chunks - 1` chunks, so the model stays grounded on already-spoken audio. Only whole chunks are ever fed as context, keeping the acoustic prefix aligned to its transcript text. Set `long_form` to `true`/`false` to force the mode on or off; the default (`null`) auto-engages when the text exceeds the chunk size.
+
+With `long_form_pin_anchor` (default on), the whole first chunk is pinned into every continuation prefix alongside the rolling recent window (the middle is evicted), re-grounding timbre on a stable reference to prevent voice drift over long passages.
+
+`prefix_cfg_scale` applies classifier-free guidance relative to the acoustic prefix. Its unconditional twin drops the prefix and context text but keeps the speaker and emotion conditioning; `>1` tightens continuity across chunk joins while `<1`/negative loosens it. It has no effect on the first chunk. Each request uses at most one guidance twin: prefix guidance takes precedence over emotion guidance (`emotion_cfg_scale`), which takes precedence over speaker guidance (`cfg_scale`).
+
 ## Distributed Serving
 
 Tensor parallelism is available with `--tp-size n`. Rank 0 handles API-facing scheduler messages and broadcasts work to the remaining ranks.

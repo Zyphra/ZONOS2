@@ -143,12 +143,19 @@ Set `text_normalization=False` to feed text through verbatim. The standalone
 resolvers (`resolve_speaking_rate_bucket`, `resolve_quality_buckets`,
 `resolve_max_tokens`) are also available if you want to precompute buckets.
 
+For long passages, use `generate_long_one(text, TTSSamplingParams(prefix_cfg_scale=1.2), speaker_embedding=emb)`; it keeps whole prior chunks as acoustic context, optionally pins the first chunk, and applies the same speaker conditioning to every chunk. `chunk_chars`, `window_chunks`, `pin_anchor`, and `split_mode` control chunking and context.
+
 
 ## API Reference
 
 ### `POST /tts/generate`
 
 Full-featured TTS endpoint with streaming support.
+
+Long text is automatically split into overlapping chunks, each synthesized as a
+teacher-forced continuation of prior audio. This avoids boundary discontinuities and
+voice drift over long passages; see the `long_form_*` parameters below to tune or
+disable it.
 
 **Request body:**
 
@@ -182,6 +189,13 @@ Full-featured TTS endpoint with streaming support.
 | `emotion_arousal` | float | `0.0` | Arousal axis (−1 calm … +1 excited) |
 | `emotion_strength` | float | `1.0` | Multiplier on the calibrated strength; `1.0` = calibrated, higher exaggerates |
 | `emotion_cfg_scale` | float | `1.0` | Emotion guidance; `1.0` = off, ~1.5 strongly amplifies emotion (best with expressive mode), ~2× compute |
+| `cfg_scale` | float | `1.0` | Speaker-embedding classifier-free guidance; `1.0` disables, `>1` pushes generation toward the target speaker |
+| `prefix_cfg_scale` | float | `1.0` | Acoustic-prefix classifier-free guidance for long-form continuation chunks; `1.0` disables, `>1` sharpens continuity across chunk joins, `<1`/negative downweights the prefix. No effect on the first chunk |
+| `long_form` | bool \| null | `null` | `null` = auto (engage when text exceeds the chunk size), `true`/`false` force long-form on/off |
+| `long_form_chunk_chars` | int | `150` | New text generated per step, in characters |
+| `long_form_window_chunks` | int | `2` | Total chunks fed per step; `window-1` prior chunks are teacher-forced context. `1` disables teacher forcing |
+| `long_form_pin_anchor` | bool | `true` | Pin the whole first chunk into every continuation prefix to prevent timbre drift over long passages |
+| `long_form_split_mode` | string | `"word"` | Chunking strategy: `"word"` (greedy word packing) or `"sentence"` (sentence boundaries, falling back to words for over-long sentences) |
 | `stream` | bool | `true` | Stream audio chunks |
 
 **Response:** Raw PCM audio (`audio/pcm`, float32, 44.1 kHz, mono). Headers include `X-Audio-Sample-Rate`, `X-Audio-Channels`, `X-Audio-Format`.

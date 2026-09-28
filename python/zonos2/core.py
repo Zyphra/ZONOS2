@@ -65,6 +65,9 @@ class TTSSamplingParams:
     repetition_penalty: float = 1.2
     repetition_codebooks: int = 8
     seed: int | None = None
+    # Speaker-embedding classifier-free guidance scale (1.0 = disabled). See the
+    # matching field on zonos2.message.tts.TTSSamplingParams.
+    cfg_scale: float = 1.0
 
 
 @dataclass(eq=False)
@@ -92,10 +95,8 @@ class TTSReq:
     # Optional emotion delta added to the projected speaker hidden vector
     # (post speaker_projection); 1D CPU float32 tensor of shape (hidden_size,).
     speaker_emotion_delta: torch.Tensor | None = None
-    # Emotion classifier-free guidance. On the conditional request,
-    # cfg_scale > 1.0 and cfg_twin points at its paired unconditional request
-    # (same prompt + speaker but speaker_emotion_delta=None). is_cfg_uncond marks
-    # the twin (internal, emits no output). guided = uncond + cfg_scale*(cond-uncond).
+    # CFG uses one paired unconditional request for acoustic prefix, emotion, or speaker
+    # guidance. The twin is internal and emits no output.
     cfg_scale: float = 1.0
     is_cfg_uncond: bool = False
     cfg_twin: "TTSReq | None" = None

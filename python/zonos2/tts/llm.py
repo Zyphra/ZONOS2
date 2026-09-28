@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 from dataclasses import dataclass
 from typing import Dict, List
@@ -19,7 +20,16 @@ from zonos2.scheduler import SchedulerConfig
 from zonos2.scheduler.scheduler import TTSScheduler
 from zonos2.tokenizer.vocoder import TTSVocoderManager, shear_up
 
+from .longform import (
+    build_continuation_prompt,
+    context_chunks,
+    split_text,
+    trim_chunk_codes,
+    windowed_context_indices,
+)
 from .prompt import TTSPromptBuilder, TTSPromptConfig
+
+logger = logging.getLogger(__name__)
 
 
 class RequestAllFinished(Exception):
@@ -56,6 +66,7 @@ class PendingRequest:
     speaker_embedding: torch.Tensor | None = None
     clean_speaker_background: bool = False
     accurate_mode: bool = True
+    cfg_uncond_input_ids: torch.Tensor | None = None
 
 
 class TTSLLM(TTSScheduler):
@@ -388,6 +399,7 @@ class TTSLLM(TTSScheduler):
                     speaker_embedding=req.speaker_embedding,
                     clean_speaker_background=req.clean_speaker_background,
                     accurate_mode=req.accurate_mode,
+                    cfg_uncond_input_ids=req.cfg_uncond_input_ids,
                 )
             )
 
@@ -429,6 +441,7 @@ class TTSLLM(TTSScheduler):
         speaker_embedding: torch.Tensor | List[torch.Tensor | None] | None = None,
         clean_speaker_background: bool | List[bool] = False,
         accurate_mode: bool | List[bool] = True,
+        cfg_uncond_prompts: List[str | List[List[int]] | None] | None = None,
     ) -> List[Dict]:
         """Generate audio tokens for a batch of prompts.
 
@@ -460,6 +473,9 @@ class TTSLLM(TTSScheduler):
                 (single or per-prompt), matching the server flag.
             accurate_mode: Accurate (on) vs expressive (off) mode, matching the
                 server default of True (single or per-prompt).
+            cfg_uncond_prompts: Optional per-prompt prefix-free prompts for prefix
+                CFG; string prompts receive the same text normalization, speaking
+                rate, and quality conditioning as their corresponding prompts.
 
         Returns:
             List of dicts with:
@@ -519,15 +535,19 @@ class TTSLLM(TTSScheduler):
             clean_speaker_background, len(prompts)
         )
         accurate_modes = self._broadcast_per_prompt(accurate_mode, len(prompts))
+        cfg_uncond_prompts = self._broadcast_per_prompt(
+            cfg_uncond_prompts, len(prompts)
+        )
 
         # Tokenize and queue all requests
-        for prompt, sp, rate_bucket, spk_emb, clean_bg, acc_mode in zip(
+        for prompt, sp, rate_bucket, spk_emb, clean_bg, acc_mode, uncond_prompt in zip(
             prompts,
             sampling_params,
             speaking_rate_buckets,
             speaker_embeddings,
             clean_backgrounds,
             accurate_modes,
+            cfg_uncond_prompts,
         ):
             input_ids = self._tokenize_one(
                 prompt,
@@ -536,6 +556,17 @@ class TTSLLM(TTSScheduler):
                 language=language,
                 text_normalization=text_normalization,
             )
+            uncond_input_ids = (
+                self._tokenize_one(
+                    uncond_prompt,
+                    speaking_rate_bucket=rate_bucket,
+                    quality_buckets=quality_buckets,
+                    language=language,
+                    text_normalization=text_normalization,
+                )
+                if uncond_prompt is not None
+                else None
+            )
             self.pending_requests.append(
                 PendingRequest(
                     input_ids=input_ids,
@@ -543,9 +574,9 @@ class TTSLLM(TTSScheduler):
                     speaker_embedding=spk_emb,
                     clean_speaker_background=bool(clean_bg),
                     accurate_mode=bool(acc_mode),
+                    cfg_uncond_input_ids=uncond_input_ids,
                 )
             )
-
         # Run generation
         try:
             self.run_forever()
@@ -643,6 +674,201 @@ class TTSLLM(TTSScheduler):
             accurate_mode=accurate_mode,
         )
         return results[0]
+
+    def _quality_without_trailing_silence(
+        self, resolved: List[int | None] | None
+    ) -> List[int | None] | None:
+        """Null out the trailing-silence feature in a resolved quality list.
+
+        Non-final chunks should not be conditioned to append trailing silence,
+        otherwise each chunk ends utterance-finally and the joins are audible.
+        """
+        if resolved is None:
+            return None
+        out = list(resolved)
+        for idx, feature in enumerate(self.quality_features):
+            if feature == "trailing_silence_s" and idx < len(out):
+                out[idx] = None
+        return out
+
+    def generate_long_one(
+        self,
+        text: str,
+        sampling_params: TTSSamplingParams | None = None,
+        *,
+        chunk_chars: int = 150,
+        window_chunks: int = 2,
+        pin_anchor: bool = True,
+        split_mode: str = "word",
+        decode_audio: bool | None = None,
+        speaking_rate_bucket: int | None = None,
+        quality_buckets: Dict[str, int | None] | List[int | None] | None = None,
+        boundary_trim_frames: int = 3,
+        speaker_embedding: torch.Tensor | None = None,
+        clean_speaker_background: bool = False,
+        accurate_mode: bool = True,
+        language: str = "en_us",
+        text_normalization: bool = True,
+    ) -> Dict:
+        """Generate arbitrarily long audio via windowed teacher-forced continuation.
+
+        Splits ``text`` into chunks of at most ``chunk_chars`` (the new text
+        generated per step) and synthesizes them sequentially. Each chunk after
+        the first is generated as a literal continuation of the previous chunks'
+        audio codes (fed back as an acoustic prefix), with those chunks' text
+        included in the conditioning so the prefix aligns.
+
+        ``split_mode`` selects how text is chunked: ``"word"`` packs words
+        greedily; ``"sentence"`` packs whole sentences (falling back to words for
+        over-long sentences) so boundaries prefer sentence ends.
+
+        ``pin_anchor`` (default ``True``) pins the whole first chunk into every
+        continuation prefix and evicts the middle, so every chunk is re-grounded
+        on the same high-quality reference and timbre does not drift over long
+        passages. Only whole chunks are ever fed, so the acoustic prefix stays
+        aligned to the prompt text.
+
+        ``window_chunks`` is the total number of chunks fed per step (the new
+        chunk plus ``window_chunks - 1`` recent context chunks). ``window_chunks=2``
+        (default) carries one recent chunk of context; ``window_chunks=1``
+        disables the recent window (with ``pin_anchor`` the prefix is then the
+        anchor alone; without it, each chunk is generated independently and
+        boundaries will not be seamless); ``window_chunks=3`` carries two recent
+        chunks. For a shorter effective overlap, lower ``chunk_chars`` so each
+        chunk is shorter.
+
+        Speaker cloning accepts the same embedding and background/accurate-mode
+        controls as :meth:`generate_one`, applied to every chunk.
+
+        Text normalization is applied to the complete input before splitting,
+        matching the server and keeping continuation text aligned with its audio.
+
+        The per-chunk sheared outputs form one continuous stream that is
+        shear_up'd and DAC-decoded once at the end. Returns the same dict shape
+        as :meth:`generate_one`.
+        """
+        if sampling_params is None:
+            sampling_params = TTSSamplingParams()
+        if text_normalization:
+            from zonos2.tokenizer.textnorm import SERVER_TO_NEMO_LANG
+
+            language = str(language or "").strip().lower().replace("-", "_")
+            if language not in SERVER_TO_NEMO_LANG:
+                raise ValueError(f"Unsupported language code: {language!r}.")
+            if self._text_normalizer is not None:
+                text = self._text_normalizer.normalize(text, language)
+
+
+        chunks = split_text(text, chunk_chars, split_mode)
+        if len(chunks) <= 1:
+            return self.generate_one(
+                text,
+                sampling_params,
+                decode_audio=decode_audio,
+                speaking_rate_bucket=speaking_rate_bucket,
+                quality_buckets=quality_buckets,
+                language=language,
+                text_normalization=False,
+                speaker_embedding=speaker_embedding,
+                clean_speaker_background=clean_speaker_background,
+                accurate_mode=accurate_mode,
+            )
+
+        ctx = context_chunks(window_chunks)
+        final_q = self._resolve_quality_buckets(quality_buckets)
+        nonfinal_q = self._quality_without_trailing_silence(final_q)
+
+        # Per-chunk raw sheared frames ([cb0..cb_{n-1}] each), trimmed to content.
+        chunk_audio: List[List[List[int]]] = []
+        for i, chunk in enumerate(chunks):
+            is_last = i == len(chunks) - 1
+            q = final_q if is_last else nonfinal_q
+            # Whole prior chunks fed as context: a rolling tail plus, when set, the
+            # pinned first chunk (middle evicted). Whole chunks keep text aligned
+            # to audio so the model never re-utters un-realized text.
+            context_idx = windowed_context_indices(
+                i, context_chunks=ctx, pin_anchor=pin_anchor
+            )
+            context_text = " ".join(chunks[j] for j in context_idx)
+            context_codes = [f for j in context_idx for f in chunk_audio[j]]
+            if not context_codes:
+                # First chunk, or teacher forcing disabled: generate fresh
+                # (chunk-0 style, with the silence lead-in prefix).
+                result = self.generate(
+                    [chunk],
+                    sampling_params,
+                    decode_audio=False,
+                    speaking_rate_bucket=speaking_rate_bucket,
+                    quality_buckets=q,
+                    language=language,
+                    text_normalization=False,
+                    speaker_embedding=speaker_embedding,
+                    clean_speaker_background=clean_speaker_background,
+                    accurate_mode=accurate_mode,
+                )[0]
+            else:
+                prompt = build_continuation_prompt(
+                    self._prompt_builder,
+                    context_text,
+                    chunk,
+                    context_codes,
+                    text_vocab=self.text_vocab,
+                    speaking_rate_bucket=speaking_rate_bucket,
+                    quality_buckets=q,
+                )
+                # Prefix CFG: the unconditional twin is this chunk generated fresh
+                # (no acoustic prefix / context text). The text prompt is tokenized
+                # with the same speaking-rate / quality conditioning as the cond
+                # prompt; the pre-tokenized cond prompt ignores those kwargs.
+                uncond_prompts = (
+                    [chunk]
+                    if float(sampling_params.prefix_cfg_scale) != 1.0
+                    else None
+                )
+                result = self.generate(
+                    [prompt.tolist()],
+                    sampling_params,
+                    decode_audio=False,
+                    speaking_rate_bucket=speaking_rate_bucket,
+                    quality_buckets=q,
+                    language=language,
+                    text_normalization=False,
+                    cfg_uncond_prompts=uncond_prompts,
+                    speaker_embedding=speaker_embedding,
+                    clean_speaker_background=clean_speaker_background,
+                    accurate_mode=accurate_mode,
+                )[0]
+
+            if result["eos_frame"] is None:
+                logger.warning(
+                    "Long-form chunk %d/%d hit max_tokens without EOA; chunk may be "
+                    "truncated. Consider a larger max_tokens or smaller max_chars.",
+                    i + 1,
+                    len(chunks),
+                )
+            trimmed = trim_chunk_codes(
+                result["audio_tokens"],
+                result["eos_frame"],
+                drop_trailing_frames=0 if is_last else boundary_trim_frames,
+            )
+            chunk_audio.append(trimmed)
+
+        should_decode = decode_audio if decode_audio is not None else self.decode_audio
+        all_frames = [frame for chunk in chunk_audio for frame in chunk]
+
+        audio_bytes = None
+        if should_decode and all_frames and self._vocoder:
+            codes = torch.tensor(all_frames, dtype=torch.int64, device="cuda")
+            codes = shear_up(codes, self.audio_pad_id).unsqueeze(0)
+            audio = self._vocoder.decode_all(codes, apply_shear_up=False)
+            audio_bytes = audio[0].numpy().astype("float32").tobytes()
+
+        return {
+            "audio_tokens": all_frames,
+            "eos_frame": len(all_frames),
+            "audio": audio_bytes,
+            "sample_rate": 44100,
+        }
 
     def save_audio(
         self,
